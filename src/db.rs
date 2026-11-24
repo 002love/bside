@@ -1107,31 +1107,21 @@ impl Database {
             .map(|f| format!("%{}%", f.trim().to_lowercase()))
             .unwrap_or_else(|| "%".to_string());
 
-        let (
-            total_plays,
-            unique_tracks,
-            unique_artists,
-            first_played_ms,
-            last_played_ms,
-            total_listened_ms,
-            known_duration_plays,
-            skipped_plays,
-            completed_plays,
-            avg_popularity,
-            explicit_plays,
-        ): (
-            i64,
-            i64,
-            i64,
-            Option<i64>,
-            Option<i64>,
-            i64,
-            i64,
-            i64,
-            i64,
-            Option<f64>,
-            i64,
-        ) = self.conn.query_row(
+        struct AggregateStatsRow {
+            total_plays: i64,
+            unique_tracks: i64,
+            unique_artists: i64,
+            first_played_ms: Option<i64>,
+            last_played_ms: Option<i64>,
+            total_listened_ms: i64,
+            known_duration_plays: i64,
+            skipped_plays: i64,
+            completed_plays: i64,
+            avg_popularity: Option<f64>,
+            explicit_plays: i64,
+        }
+
+        let agg = self.conn.query_row(
             "
             SELECT
                 COUNT(*),
@@ -1151,21 +1141,34 @@ impl Database {
             ",
             params![since_ms, filter_pattern],
             |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
-                    row.get(10)?,
-                ))
+                Ok(AggregateStatsRow {
+                    total_plays: row.get(0)?,
+                    unique_tracks: row.get(1)?,
+                    unique_artists: row.get(2)?,
+                    first_played_ms: row.get(3)?,
+                    last_played_ms: row.get(4)?,
+                    total_listened_ms: row.get(5)?,
+                    known_duration_plays: row.get(6)?,
+                    skipped_plays: row.get(7)?,
+                    completed_plays: row.get(8)?,
+                    avg_popularity: row.get(9)?,
+                    explicit_plays: row.get(10)?,
+                })
             },
         )?;
+        let AggregateStatsRow {
+            total_plays,
+            unique_tracks,
+            unique_artists,
+            first_played_ms,
+            last_played_ms,
+            total_listened_ms,
+            known_duration_plays,
+            skipped_plays,
+            completed_plays,
+            avg_popularity,
+            explicit_plays,
+        } = agg;
 
         let mut top_tracks_stmt = self.conn.prepare(
             "
@@ -1731,7 +1734,7 @@ mod tests {
     fn temp_db_path(label: &str) -> (PathBuf, PathBuf) {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "spotify_friend_logger_test_{}_{}_{}",
+            "bside_test_{}_{}_{}",
             label,
             std::process::id(),
             n

@@ -431,7 +431,7 @@ pub async fn connect_cached(cache_dir: &Path) -> Result<Session> {
     let cache = open_cache(cache_dir)?;
     let credentials = cache.credentials().ok_or_else(|| {
         anyhow!(
-            "No cached Spotify credentials found in {}. Run `spotify-friend-logger login` first.",
+            "No cached Spotify credentials found in {}. Run `bside login` first.",
             cache_dir.display()
         )
     })?;

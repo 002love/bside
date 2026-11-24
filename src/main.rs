@@ -26,9 +26,9 @@ use crate::spotify::{
 
 #[derive(Parser)]
 #[command(
-    name = "spotify-friend-logger",
+    name = "bside",
     version,
-    about = "Logs Spotify Friend Activity via librespot (no browser cookies required)"
+    about = "The flip side of Spotify — self-hosted listening analytics, skip/repeat tracking, and playlist reconstruction via librespot"
 )]
 struct Cli {
     /// Directory for cached Spotify session credentials
@@ -229,7 +229,7 @@ struct ActivePlay {
 fn default_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("spotify-friend-logger")
+        .join("bside")
 }
 
 fn resolve_cache_dir(arg: Option<PathBuf>) -> PathBuf {
@@ -806,7 +806,7 @@ async fn main() -> Result<()> {
             let profiles = db.query_profiles(friend.as_deref())?;
             if profiles.is_empty() {
                 println!(
-                    "No stored profiles found. Run `spotify-friend-logger profiles --refresh` or `watch` first."
+                    "No stored profiles found. Run `bside profiles --refresh` or `watch` first."
                 );
                 return Ok(());
             }
