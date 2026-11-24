@@ -325,7 +325,11 @@ mod tests {
                     uri: "spotify:playlist:1".to_string(),
                     name: "Chill Mix".to_string(),
                     index: Some(0),
+                    context_type: "playlist".to_string(),
+                    owner: None,
+                    is_private: false,
                 }),
+                ..Default::default()
             },
         }
     }
