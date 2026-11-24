@@ -178,3 +178,37 @@ export interface ProfileEvent {
 }
 
 export type TimeframeKey = '7' | '30' | '90' | 'all';
+
+export interface LiveFriendItem {
+  user_uri: string;
+  user_name: string;
+  user_image_url: string | null;
+  playing: boolean;
+  timestamp_ms: number;
+  item_type: string;
+  track_uri: string;
+  track_name: string;
+  all_artists: string;
+  album_name: string | null;
+  cover_url: string | null;
+  duration_ms: number | null;
+  popularity: number | null;
+  explicit: boolean | null;
+  release_date: string | null;
+  context_name: string | null;
+  context_uri: string | null;
+  context_type: string | null;
+  context_owner: string | null;
+  context_is_private: boolean;
+  spotify_url: string;
+}
+
+export interface LiveSnapshot {
+  connected: boolean;
+  status: string; // "live" | "connecting" | "offline" | "unauthenticated" | "error"
+  message: string | null;
+  account: string | null;
+  updated_at_ms: number | null;
+  poll_interval_secs: number;
+  friends: LiveFriendItem[];
+}

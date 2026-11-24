@@ -81,175 +81,185 @@ export function ProfilesTab({ friend, timeframe, refreshTick }: ProfilesTabProps
   }
 
   return (
-    <div className="space-y-5">
-      {/* Friend Profile Cards */}
+    <div className="space-y-6">
+      {/* 01 // Friend Profile Cards */}
       {profiles.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {profiles.map((profile) => {
-            const profileUrl = spotifyUriToUrl(profile.user_uri);
-            return (
-              <Card key={profile.user_uri}>
-                <CardHeader className="flex-row items-center gap-3.5 pb-3">
-                  {profile.image_url ? (
-                    <img
-                      src={profile.image_url}
-                      alt={profile.user_name}
-                      className="h-11 w-11 shrink-0 rounded-full border border-zinc-800 object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-zinc-400">
-                      <User className="h-5 w-5" />
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <CardTitle className="truncate text-sm">{profile.user_name}</CardTitle>
-                      {profileUrl && (
-                        <a
-                          href={profileUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-zinc-500 transition-colors hover:text-emerald-400"
-                          title="Open Spotify profile"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
-                    </div>
-                    <CardDescription className="mt-0.5">
-                      {profile.followers_count != null
-                        ? `${profile.followers_count.toLocaleString()} followers`
-                        : 'Followers hidden'}
-                      {profile.following_count != null
-                        ? ` · ${profile.following_count.toLocaleString()} following`
-                        : ''}
-                      {' · '}Updated {formatRelativeTime(profile.updated_at_ms)}
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="space-y-4">
-                  <div>
-                    <div className="mb-2 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-zinc-400">
-                      <ListMusic className="h-3 w-3 text-emerald-400" />
-                      Public Playlists ({profile.public_playlists.length})
-                    </div>
-                    {profile.public_playlists.length === 0 ? (
-                      <p className="text-xs text-zinc-500">No public playlists listed.</p>
+        <section className="space-y-2.5">
+          <div className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+            01 // SYNCED PROFILES ({profiles.length})
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {profiles.map((profile) => {
+              const profileUrl = spotifyUriToUrl(profile.user_uri);
+              return (
+                <Card key={profile.user_uri} className="shadow-edge">
+                  <CardHeader className="flex-row items-center gap-3.5 border-b border-[#2b2b27] pb-3.5">
+                    {profile.image_url ? (
+                      <img
+                        src={profile.image_url}
+                        alt={profile.user_name}
+                        className="h-12 w-12 shrink-0 rounded-none border border-[#2b2b27] object-cover"
+                      />
                     ) : (
-                      <div className="space-y-1.5">
-                        {profile.public_playlists.slice(0, 8).map((pl) => {
-                          const plUrl = spotifyUriToUrl(pl.uri);
-                          return (
-                            <div
-                              key={pl.uri}
-                              className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800/70 bg-zinc-950/60 px-2.5 py-1.5 text-xs"
-                            >
-                              <span className="truncate text-zinc-200">{pl.name}</span>
-                              <div className="flex shrink-0 items-center gap-2">
-                                {pl.followers_count != null && (
-                                  <span className="font-mono text-[10px] text-zinc-500">
-                                    {pl.followers_count}
-                                  </span>
-                                )}
-                                {plUrl && (
-                                  <a
-                                    href={plUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-zinc-400 transition-colors hover:text-emerald-400"
-                                  >
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-none border border-[#2b2b27] bg-[#141412] text-[#8d8c84]">
+                        <User className="h-5 w-5" />
                       </div>
                     )}
-                  </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="truncate">{profile.user_name}</CardTitle>
+                        {profileUrl && (
+                          <a
+                            href={profileUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[#8d8c84] transition-colors hover:text-[#89b471]"
+                            title="Open Spotify profile"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
+                      </div>
+                      <CardDescription className="mt-0.5 uppercase">
+                        {profile.followers_count != null
+                          ? `${profile.followers_count.toLocaleString()} FOLLOWERS`
+                          : 'FOLLOWERS HIDDEN'}
+                        {profile.following_count != null
+                          ? ` · ${profile.following_count.toLocaleString()} FOLLOWING`
+                          : ''}
+                        {' · '}SYNCED {formatRelativeTime(profile.updated_at_ms)}
+                      </CardDescription>
+                    </div>
+                  </CardHeader>
 
-                  {profile.recently_played_artists.length > 0 && (
-                    <>
-                      <Separator />
-                      <div>
-                        <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-zinc-400">
-                          Recently Played Artists
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {profile.recently_played_artists.slice(0, 12).map((artist) => {
-                            const artistUrl = spotifyUriToUrl(artist.uri);
-                            return artistUrl ? (
-                              <a
-                                key={artist.uri || artist.name}
-                                href={artistUrl}
-                                target="_blank"
-                                rel="noreferrer"
+                  <CardContent className="space-y-4 pt-4">
+                    <div>
+                      <div className="mb-2 flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+                        <ListMusic className="h-3 w-3 text-[#89b471]" />
+                        PUBLIC PLAYLISTS ({profile.public_playlists.length})
+                      </div>
+                      {profile.public_playlists.length === 0 ? (
+                        <p className="font-mono text-xs text-[#8d8c84]">No public playlists listed.</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {profile.public_playlists.slice(0, 8).map((pl) => {
+                            const plUrl = spotifyUriToUrl(pl.uri);
+                            return (
+                              <div
+                                key={pl.uri}
+                                className="flex items-center justify-between gap-2 rounded-none border border-[#2b2b27] bg-[#141412] px-2.5 py-1.5 font-mono text-xs"
                               >
-                                <Badge
-                                  variant="secondary"
-                                  className="hover:border-emerald-500/40 hover:text-emerald-300"
-                                >
-                                  {artist.name}
-                                </Badge>
-                              </a>
-                            ) : (
-                              <Badge key={artist.name} variant="secondary">
-                                {artist.name}
-                              </Badge>
+                                <span className="truncate text-[#efeee8]">{pl.name}</span>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {pl.followers_count != null && (
+                                    <span className="text-[10px] text-[#8d8c84] tabular-nums">
+                                      {pl.followers_count}
+                                    </span>
+                                  )}
+                                  {plUrl && (
+                                    <a
+                                      href={plUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-[#8d8c84] transition-colors hover:text-[#89b471]"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
                             );
                           })}
                         </div>
-                      </div>
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                      )}
+                    </div>
+
+                    {profile.recently_played_artists.length > 0 && (
+                      <>
+                        <Separator />
+                        <div>
+                          <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+                            RECENTLY PLAYED ARTISTS
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {profile.recently_played_artists.slice(0, 12).map((artist) => {
+                              const artistUrl = spotifyUriToUrl(artist.uri);
+                              return artistUrl ? (
+                                <a
+                                  key={artist.uri || artist.name}
+                                  href={artistUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  <Badge
+                                    variant="secondary"
+                                    className="hover:border-[#89b471] hover:text-[#89b471]"
+                                  >
+                                    {artist.name}
+                                  </Badge>
+                                </a>
+                              ) : (
+                                <Badge key={artist.name} variant="secondary">
+                                  {artist.name}
+                                </Badge>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </section>
       )}
 
-      {/* Chronological Changelog */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-emerald-400" />
-            <CardTitle>Profile Changelog</CardTitle>
-          </div>
-          <CardDescription>
-            Detected renames, follower deltas, public playlist additions/removals, and new artists
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {events.length === 0 ? (
-            <p className="py-6 text-center text-xs text-zinc-500">
-              No profile changes detected in this timeframe.
-            </p>
-          ) : (
-            <div className="divide-y divide-zinc-800/70">
-              {events.map((ev) => (
-                <div
-                  key={ev.id}
-                  className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-xs"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <Badge variant={eventBadgeVariant(ev.event_type)} className="shrink-0">
-                      {ev.event_type.replace(/_/g, ' ')}
-                    </Badge>
-                    <span className="font-medium text-zinc-100">{ev.user_name}</span>
-                    <span className="truncate text-zinc-400">{ev.summary}</span>
-                  </div>
-                  <span className="shrink-0 font-mono text-[11px] text-zinc-500">
-                    {ev.detected_at_local}
-                  </span>
-                </div>
-              ))}
+      {/* 02 // Chronological Changelog */}
+      <section className="space-y-2.5">
+        <div className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+          02 // PROFILE CHANGELOG
+        </div>
+        <Card>
+          <CardHeader className="border-b border-[#2b2b27]">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-[#89b471]" />
+              <CardTitle>Profile Changelog</CardTitle>
             </div>
-          )}
-        </CardContent>
-      </Card>
+            <CardDescription>
+              Detected renames, follower deltas, public playlist additions/removals, and new artists
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-2">
+            {events.length === 0 ? (
+              <p className="py-6 text-center font-mono text-xs text-[#8d8c84]">
+                No profile changes detected in this timeframe.
+              </p>
+            ) : (
+              <div className="divide-y divide-[#2b2b27]">
+                {events.map((ev) => (
+                  <div
+                    key={ev.id}
+                    className="flex flex-wrap items-center justify-between gap-2 py-2.5 font-mono text-xs"
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <Badge variant={eventBadgeVariant(ev.event_type)} className="shrink-0">
+                        {ev.event_type.replace(/_/g, ' ')}
+                      </Badge>
+                      <span className="font-semibold text-[#efeee8]">{ev.user_name}</span>
+                      <span className="truncate text-[#8d8c84]">{ev.summary}</span>
+                    </div>
+                    <span className="shrink-0 text-[10px] text-[#8d8c84] tabular-nums">
+                      {ev.detected_at_local}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
     </div>
   );
 }

@@ -16,7 +16,7 @@ export function TooltipContent({
       <RadixTooltip.Content
         sideOffset={sideOffset}
         className={cn(
-          'z-50 rounded-lg border border-zinc-800 bg-zinc-900/95 px-2.5 py-1.5 text-xs text-zinc-100 shadow-lg backdrop-blur-md',
+          'z-50 rounded-none border border-[#45453e] bg-[#181816] px-2.5 py-1.5 font-mono text-[11px] text-[#efeee8] shadow-edge',
           className,
         )}
         {...props}

@@ -3,35 +3,166 @@
 @layer base {
   :root {
     color-scheme: dark;
+    --bg-canvas: #111110;
+    --bg-panel: #181816;
+    --bg-inset: #141412;
+    --bg-hover: #20201d;
+    --border-subtle: #2b2b27;
+    --border-active: #45453e;
+    --ink-primary: #efeee8;
+    --ink-muted: #8d8c84;
+    --accent-moss: #557445;
+    --accent-sage: #89b471;
+    --accent-amber: #c48a47;
+    --accent-rust: #b85d4f;
   }
 
   * {
-    border-color: rgb(39 39 42 / 0.85);
+    border-color: #2b2b27;
   }
 
+  html,
   body {
-    background-color: #09090b;
-    color: #f4f4f5;
-    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: #111110;
+    color: #efeee8;
+    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-feature-settings: "zero" 1;
   }
 }
 
-/* Subtle dark scrollbars */
+/* Typography utilities */
+.font-display {
+  font-family: 'Barlow Condensed', system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.font-mono {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Subtle dot-grid editorial texture */
+.bg-pixel-grid {
+  background-image: radial-gradient(rgba(239, 238, 232, 0.055) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Signature neo-brutalist moss & edge offset shadows */
+.shadow-moss {
+  box-shadow: 4px 4px 0px #557445;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1), box-shadow 120ms cubic-bezier(0.2, 0, 0, 1), border-color 120ms ease;
+}
+
+.shadow-moss-interactive {
+  box-shadow: 4px 4px 0px #557445;
+  transition: transform 110ms cubic-bezier(0.2, 0, 0, 1), box-shadow 110ms cubic-bezier(0.2, 0, 0, 1), background-color 120ms ease;
+}
+
+.shadow-moss-interactive:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 5px 5px 0px #557445;
+}
+
+.shadow-moss-interactive:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 1px 1px 0px #557445;
+}
+
+.shadow-edge {
+  box-shadow: 3px 3px 0px #2b2b27;
+}
+
+/* Vinyl spin animation */
+@keyframes vinyl-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-vinyl-spin {
+  animation: vinyl-spin 5s linear infinite;
+}
+
+/* Stepped pixel indicator blink */
+@keyframes pixel-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.animate-pixel-blink {
+  animation: pixel-blink 1.4s steps(2, start) infinite;
+}
+
+/* Stepped pixel equalizer column animations */
+@keyframes pixel-eq-1 {
+  0% { height: 25%; }
+  25% { height: 75%; }
+  50% { height: 50%; }
+  75% { height: 100%; }
+  100% { height: 25%; }
+}
+
+@keyframes pixel-eq-2 {
+  0% { height: 100%; }
+  25% { height: 50%; }
+  50% { height: 75%; }
+  75% { height: 25%; }
+  100% { height: 100%; }
+}
+
+@keyframes pixel-eq-3 {
+  0% { height: 50%; }
+  25% { height: 100%; }
+  50% { height: 25%; }
+  75% { height: 75%; }
+  100% { height: 50%; }
+}
+
+@keyframes pixel-eq-4 {
+  0% { height: 75%; }
+  25% { height: 25%; }
+  50% { height: 100%; }
+  75% { height: 50%; }
+  100% { height: 75%; }
+}
+
+.animate-pixel-eq-1 {
+  animation: pixel-eq-1 0.9s steps(4, end) infinite;
+}
+
+.animate-pixel-eq-2 {
+  animation: pixel-eq-2 0.78s steps(4, end) infinite;
+}
+
+.animate-pixel-eq-3 {
+  animation: pixel-eq-3 1.02s steps(4, end) infinite;
+}
+
+.animate-pixel-eq-4 {
+  animation: pixel-eq-4 0.84s steps(4, end) infinite;
+}
+
+/* Sharp dark scrollbars (0px radius) */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #111110;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(113, 113, 122, 0.35);
-  border-radius: 9999px;
+  background: #2b2b27;
+  border-radius: 0px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(113, 113, 122, 0.55);
+  background: #45453e;
 }

@@ -13,16 +13,20 @@ export function EmptyState({
   command = 'bside watch',
 }: EmptyStateProps) {
   return (
-    <Card className="border-dashed border-zinc-800/90 bg-zinc-900/35">
+    <Card className="border-dashed border-[#45453e] bg-[#141412]">
       <CardContent className="flex flex-col items-center justify-center py-14 text-center">
-        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-emerald-400">
-          <Terminal className="h-5 w-5" />
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-none border border-[#45453e] bg-[#181816] text-[#89b471] shadow-edge">
+          <Terminal className="h-4 w-4" />
         </div>
-        <h3 className="text-sm font-medium text-zinc-100">{title}</h3>
-        <p className="mt-1 max-w-md text-xs leading-relaxed text-zinc-400">{description}</p>
+        <h3 className="font-display text-xl font-bold uppercase tracking-tight text-[#efeee8]">
+          {title}
+        </h3>
+        <p className="mt-1.5 max-w-md font-mono text-[11px] leading-relaxed text-[#8d8c84]">
+          {description}
+        </p>
         {command && (
-          <div className="mt-4 inline-flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 font-mono text-xs text-emerald-400">
-            <span className="text-zinc-500">$</span>
+          <div className="mt-4 inline-flex items-center gap-2 rounded-none border border-[#45453e] bg-[#111110] px-3 py-1.5 font-mono text-xs text-[#89b471] shadow-moss">
+            <span className="text-[#8d8c84]">$</span>
             <span>{command}</span>
           </div>
         )}

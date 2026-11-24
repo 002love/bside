@@ -59,134 +59,144 @@ export function HistoryTab({ friend, timeframe, refreshTick }: HistoryTabProps) 
   }, [friend, timeframe, debouncedQuery, refreshTick]);
 
   return (
-    <Card>
-      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 pb-4">
-        <div>
-          <CardTitle>Listening History</CardTitle>
-          <p className="mt-0.5 text-xs text-zinc-400">
-            {loading ? 'Loading plays...' : `${rows.length} recent ${rows.length === 1 ? 'play' : 'plays'}`}
-          </p>
-        </div>
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search tracks, artists, albums, contexts..."
-            className="pl-8"
-          />
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        {!loading && rows.length === 0 ? (
-          <EmptyState
-            title={debouncedQuery ? 'No matching listens' : 'No history recorded yet'}
-            description={
-              debouncedQuery
-                ? `No listens matched "${debouncedQuery}" in the current filter.`
-                : 'Run bside watch to begin logging Spotify Friend Activity.'
-            }
-            command={debouncedQuery ? undefined : 'bside watch'}
-          />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead>Track</TableHead>
-                <TableHead>Album</TableHead>
-                <TableHead>Friend</TableHead>
-                <TableHead>Context</TableHead>
-                <TableHead className="text-right">Duration</TableHead>
-                <TableHead>Flags</TableHead>
-                <TableHead className="text-right">Played At</TableHead>
-                <TableHead className="w-10" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((item) => {
-                const artists = item.all_artists || item.artist_name;
-                const contextLabel =
-                  item.context_name ||
-                  (item.context_is_private
-                    ? formatContextLabel(item.context_type)
-                    : item.context_type
-                      ? formatContextLabel(item.context_type)
-                      : '—');
+    <div className="space-y-3">
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+        01 // CHRONOLOGICAL PLAY LOG
+      </div>
 
-                return (
-                  <TableRow key={item.id}>
-                    <TableCell className="max-w-[280px]">
-                      <div className="flex items-center gap-3">
-                        {item.cover_url ? (
-                          <img
-                            src={item.cover_url}
-                            alt={item.track_name}
-                            loading="lazy"
-                            className="h-9 w-9 shrink-0 rounded-md border border-zinc-800 object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900 text-zinc-500">
-                            <Disc3 className="h-4 w-4" />
+      <Card>
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 border-b border-[#2b2b27] pb-4">
+          <div>
+            <CardTitle>Listening History</CardTitle>
+            <p className="mt-0.5 font-mono text-[11px] uppercase tracking-wider text-[#8d8c84]">
+              {loading
+                ? 'LOADING PLAYS...'
+                : `${rows.length} RECENT ${rows.length === 1 ? 'PLAY' : 'PLAYS'}`}
+            </p>
+          </div>
+          <div className="relative w-full sm:w-80">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[#8d8c84]" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="SEARCH TRACKS, ARTISTS, ALBUMS..."
+              className="pl-8"
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {!loading && rows.length === 0 ? (
+            <div className="p-5">
+              <EmptyState
+                title={debouncedQuery ? 'No matching listens' : 'No history recorded yet'}
+                description={
+                  debouncedQuery
+                    ? `No listens matched "${debouncedQuery}" in the current filter.`
+                    : 'Run bside watch to begin logging Spotify Friend Activity.'
+                }
+                command={debouncedQuery ? undefined : 'bside watch'}
+              />
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>Track</TableHead>
+                  <TableHead>Album</TableHead>
+                  <TableHead>Friend</TableHead>
+                  <TableHead>Context</TableHead>
+                  <TableHead className="text-right">Duration</TableHead>
+                  <TableHead>Flags</TableHead>
+                  <TableHead className="text-right">Played At</TableHead>
+                  <TableHead className="w-10" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((item) => {
+                  const artists = item.all_artists || item.artist_name;
+                  const contextLabel =
+                    item.context_name ||
+                    (item.context_is_private
+                      ? formatContextLabel(item.context_type)
+                      : item.context_type
+                        ? formatContextLabel(item.context_type)
+                        : '—');
+
+                  return (
+                    <TableRow key={item.id}>
+                      <TableCell className="max-w-[280px]">
+                        <div className="flex items-center gap-3">
+                          {item.cover_url ? (
+                            <img
+                              src={item.cover_url}
+                              alt={item.track_name}
+                              loading="lazy"
+                              className="h-9 w-9 shrink-0 rounded-none border border-[#2b2b27] object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-none border border-[#2b2b27] bg-[#141412] text-[#8d8c84]">
+                              <Disc3 className="h-4 w-4" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-[#efeee8]">
+                              {item.track_name}
+                            </div>
+                            <div className="truncate text-[10px] text-[#8d8c84]">{artists}</div>
                           </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="truncate font-medium text-zinc-100">
-                            {item.track_name}
-                          </div>
-                          <div className="truncate text-[11px] text-zinc-400">{artists}</div>
                         </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="max-w-[180px] truncate text-zinc-400">
-                      {item.album_name || '—'}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-zinc-300">
-                      {item.user_name}
-                    </TableCell>
-                    <TableCell className="max-w-[200px]">
-                      <div className="flex items-center gap-1.5">
-                        {item.context_is_private && (
-                          <Badge variant="warning" className="shrink-0 gap-1 px-1.5 py-0 text-[10px]">
-                            <Lock className="h-2.5 w-2.5" />
-                            PRIVATE
-                          </Badge>
+                      </TableCell>
+                      <TableCell className="max-w-[180px] truncate text-[#8d8c84]">
+                        {item.album_name || '—'}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-[#efeee8]">
+                        {item.user_name}
+                      </TableCell>
+                      <TableCell className="max-w-[210px]">
+                        <div className="flex items-center gap-1.5">
+                          {item.context_is_private && (
+                            <Badge variant="warning" className="shrink-0 gap-1 px-1.5 py-0 text-[9px]">
+                              <Lock className="h-2.5 w-2.5" />
+                              PRIVATE
+                            </Badge>
+                          )}
+                          <span className="truncate text-[#8d8c84]">{contextLabel}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-[11px] text-[#8d8c84] tabular-nums">
+                        {formatDuration(item.duration_ms)}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1">
+                          {item.was_skipped && <Badge variant="destructive">SKIP</Badge>}
+                          {item.inferred_repeat && <Badge variant="info">REPEAT</Badge>}
+                          {item.explicit && <Badge variant="outline">E</Badge>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-right font-mono text-[11px] text-[#8d8c84] tabular-nums">
+                        {item.played_at_local}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {item.spotify_url.startsWith('https://') && (
+                          <a
+                            href={item.spotify_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open in Spotify"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-none border border-transparent text-[#8d8c84] transition-colors hover:border-[#45453e] hover:bg-[#141412] hover:text-[#89b471]"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
                         )}
-                        <span className="truncate text-zinc-400">{contextLabel}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-[11px] text-zinc-400">
-                      {formatDuration(item.duration_ms)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {item.was_skipped && <Badge variant="destructive">SKIP</Badge>}
-                        {item.inferred_repeat && <Badge variant="info">REPEAT</Badge>}
-                        {item.explicit && <Badge variant="outline">E</Badge>}
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-right font-mono text-[11px] text-zinc-400">
-                      {item.played_at_local}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {item.spotify_url.startsWith('https://') && (
-                        <a
-                          href={item.spotify_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open in Spotify"
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-emerald-400"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }

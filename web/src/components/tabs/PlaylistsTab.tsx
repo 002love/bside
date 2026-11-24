@@ -176,18 +176,23 @@ export function PlaylistsTab({ friend, refreshTick }: PlaylistsTabProps) {
   if (!loadingContexts && contexts.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-end gap-2">
-          <label
-            htmlFor="private-only-empty"
-            className="text-xs font-medium text-zinc-400 cursor-pointer"
-          >
-            Private only
-          </label>
-          <Switch
-            id="private-only-empty"
-            checked={privateOnly}
-            onCheckedChange={setPrivateOnly}
-          />
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+            01 // PLAYLIST RECONSTRUCTION
+          </span>
+          <div className="flex items-center gap-2 border border-[#2b2b27] bg-[#141412] px-2.5 py-1">
+            <label
+              htmlFor="private-only-empty"
+              className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#8d8c84] cursor-pointer"
+            >
+              PRIVATE ONLY
+            </label>
+            <Switch
+              id="private-only-empty"
+              checked={privateOnly}
+              onCheckedChange={setPrivateOnly}
+            />
+          </div>
         </div>
         <EmptyState
           title={privateOnly ? 'No private contexts discovered yet' : 'No listening contexts yet'}
@@ -203,198 +208,206 @@ export function PlaylistsTab({ friend, refreshTick }: PlaylistsTabProps) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      {/* Left list: Discovered Contexts */}
-      <Card className="lg:col-span-4">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <CardTitle>Discovered Contexts</CardTitle>
-              <CardDescription>{contexts.length} playlists & collections</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="private-only-toggle"
-                className="text-[11px] font-medium text-zinc-400 cursor-pointer"
-              >
-                Private only
-              </label>
-              <Switch
-                id="private-only-toggle"
-                checked={privateOnly}
-                onCheckedChange={setPrivateOnly}
-              />
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="p-2 pt-0">
-          <ScrollArea className="h-[560px] pr-2">
-            <div className="space-y-1">
-              {contexts.map((ctx) => {
-                const key = contextKey(ctx);
-                const isSelected = key === selectedKey;
-                const displayName =
-                  ctx.context_name ||
-                  (ctx.is_private
-                    ? `Private ${formatContextLabel(ctx.context_type)}`
-                    : ctx.context_uri || formatContextLabel(ctx.context_type));
+    <div className="space-y-3">
+      <div className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]">
+        01 // CONTEXT & PLAYLIST RECONSTRUCTION
+      </div>
 
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setSelectedKey(key)}
-                    className={cn(
-                      'w-full rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer',
-                      isSelected
-                        ? 'border-emerald-500/40 bg-emerald-500/10'
-                        : 'border-transparent bg-transparent hover:border-zinc-800 hover:bg-zinc-800/40',
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="truncate text-xs font-medium text-zinc-100">
-                          {displayName}
-                        </div>
-                        <div className="mt-0.5 truncate text-[11px] text-zinc-400">
-                          {ctx.user_name} &middot; {formatContextLabel(ctx.context_type)}
-                        </div>
-                      </div>
-                      {ctx.is_private && (
-                        <Badge variant="warning" className="shrink-0 gap-1 px-1.5 py-0 text-[10px]">
-                          <Lock className="h-2.5 w-2.5" />
-                          PRIVATE
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-zinc-500">
-                      <span>{ctx.unique_tracks} tracks</span>
-                      <span>&middot;</span>
-                      <span>{ctx.total_plays} plays</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
-
-      {/* Right panel: Rebuilt Tracklist */}
-      <Card className="lg:col-span-8">
-        <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 pb-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <ListMusic className="h-4 w-4 shrink-0 text-emerald-400" />
-              <CardTitle className="truncate">
-                {selectedContext
-                  ? selectedContext.context_name ||
-                    formatContextLabel(selectedContext.context_type)
-                  : 'Select a context'}
-              </CardTitle>
-              {selectedContext?.is_private && (
-                <Badge variant="warning" className="gap-1">
-                  <Lock className="h-2.5 w-2.5" />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        {/* Left list: Discovered Contexts */}
+        <Card className="lg:col-span-4">
+          <CardHeader className="border-b border-[#2b2b27] pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle>Discovered Contexts</CardTitle>
+                <CardDescription>{contexts.length} playlists & collections</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="private-only-toggle"
+                  className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#8d8c84] cursor-pointer"
+                >
                   PRIVATE
-                </Badge>
-              )}
+                </label>
+                <Switch
+                  id="private-only-toggle"
+                  checked={privateOnly}
+                  onCheckedChange={setPrivateOnly}
+                />
+              </div>
             </div>
-            <CardDescription className="mt-1">
-              {selectedContext
-                ? `Reconstructed from ${selectedContext.user_name}'s logged listens (${tracks.length} unique tracks)`
-                : 'Choose a playlist or Liked Songs collection from the list'}
-            </CardDescription>
-          </div>
+          </CardHeader>
+          <CardContent className="p-2">
+            <ScrollArea className="h-[560px] pr-2">
+              <div className="space-y-1">
+                {contexts.map((ctx) => {
+                  const key = contextKey(ctx);
+                  const isSelected = key === selectedKey;
+                  const displayName =
+                    ctx.context_name ||
+                    (ctx.is_private
+                      ? `Private ${formatContextLabel(ctx.context_type)}`
+                      : ctx.context_uri || formatContextLabel(ctx.context_type));
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={tracks.length === 0}
-              onClick={handleCopyUrls}
-            >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? 'Copied URLs' : 'Copy Spotify URLs'}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={tracks.length === 0}
-              onClick={handleExportM3u8}
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export .m3u8
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={tracks.length === 0}
-              onClick={handleExportCsv}
-            >
-              <FileSpreadsheet className="h-3.5 w-3.5" />
-              Export CSV
-            </Button>
-          </div>
-        </CardHeader>
-
-        <CardContent className="pt-0">
-          {loadingTracks ? (
-            <div className="py-12 text-center text-xs text-zinc-500">
-              Reconstructing tracklist...
-            </div>
-          ) : tracks.length === 0 ? (
-            <div className="py-12 text-center text-xs text-zinc-500">
-              No tracks captured for this context yet.
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-10">#</TableHead>
-                  <TableHead>Track</TableHead>
-                  <TableHead>Album</TableHead>
-                  <TableHead className="text-right">Plays</TableHead>
-                  <TableHead className="text-right">Duration</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {tracks.map((track, idx) => (
-                  <TableRow key={track.track_uri}>
-                    <TableCell className="font-mono text-[11px] text-zinc-500">{idx + 1}</TableCell>
-                    <TableCell className="max-w-[260px]">
-                      <div className="truncate font-medium text-zinc-100">{track.track_name}</div>
-                      <div className="truncate text-[11px] text-zinc-400">{track.all_artists}</div>
-                    </TableCell>
-                    <TableCell className="max-w-[180px] truncate text-zinc-400">
-                      {track.album_name || '—'}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs text-emerald-400">
-                      {track.play_count}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-[11px] text-zinc-400">
-                      {formatDuration(track.duration_ms)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {track.spotify_url.startsWith('https://') && (
-                        <a
-                          href={track.spotify_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open in Spotify"
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-emerald-400"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setSelectedKey(key)}
+                      className={cn(
+                        'w-full rounded-none border px-3 py-2.5 text-left transition-colors cursor-pointer',
+                        isSelected
+                          ? 'border-[#557445] bg-[#557445]/15 shadow-[2px_2px_0px_#557445]'
+                          : 'border-transparent bg-transparent hover:border-[#2b2b27] hover:bg-[#20201d]',
                       )}
-                    </TableCell>
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-mono text-xs font-semibold text-[#efeee8]">
+                            {displayName}
+                          </div>
+                          <div className="mt-0.5 truncate font-mono text-[10px] uppercase tracking-wider text-[#8d8c84]">
+                            {ctx.user_name} &middot; {formatContextLabel(ctx.context_type)}
+                          </div>
+                        </div>
+                        {ctx.is_private && (
+                          <Badge variant="warning" className="shrink-0 gap-1 px-1.5 py-0 text-[9px]">
+                            <Lock className="h-2.5 w-2.5" />
+                            PRIVATE
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-2 flex items-center gap-3 font-mono text-[10px] uppercase tracking-wider text-[#8d8c84]">
+                        <span>{ctx.unique_tracks} TRACKS</span>
+                        <span>&middot;</span>
+                        <span className={isSelected ? 'text-[#89b471]' : ''}>{ctx.total_plays} PLAYS</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        {/* Right panel: Rebuilt Tracklist */}
+        <Card className="lg:col-span-8">
+          <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 border-b border-[#2b2b27] pb-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <ListMusic className="h-4 w-4 shrink-0 text-[#89b471]" />
+                <CardTitle className="truncate">
+                  {selectedContext
+                    ? selectedContext.context_name ||
+                      formatContextLabel(selectedContext.context_type)
+                    : 'Select a context'}
+                </CardTitle>
+                {selectedContext?.is_private && (
+                  <Badge variant="warning" className="gap-1">
+                    <Lock className="h-2.5 w-2.5" />
+                    PRIVATE
+                  </Badge>
+                )}
+              </div>
+              <CardDescription className="mt-1">
+                {selectedContext
+                  ? `Reconstructed from ${selectedContext.user_name}'s logged listens (${tracks.length} unique tracks)`
+                  : 'Choose a playlist or Liked Songs collection from the list'}
+              </CardDescription>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={tracks.length === 0}
+                onClick={handleCopyUrls}
+              >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? 'COPIED URLS' : 'COPY URLS'}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={tracks.length === 0}
+                onClick={handleExportM3u8}
+              >
+                <Download className="h-3.5 w-3.5" />
+                .M3U8
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={tracks.length === 0}
+                onClick={handleExportCsv}
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                CSV
+              </Button>
+            </div>
+          </CardHeader>
+
+          <CardContent className="p-0">
+            {loadingTracks ? (
+              <div className="py-12 text-center font-mono text-xs uppercase tracking-wider text-[#8d8c84]">
+                RECONSTRUCTING TRACKLIST...
+              </div>
+            ) : tracks.length === 0 ? (
+              <div className="py-12 text-center font-mono text-xs text-[#8d8c84]">
+                No tracks captured for this context yet.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-10">#</TableHead>
+                    <TableHead>Track</TableHead>
+                    <TableHead>Album</TableHead>
+                    <TableHead className="text-right">Plays</TableHead>
+                    <TableHead className="text-right">Duration</TableHead>
+                    <TableHead className="w-10" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+                </TableHeader>
+                <TableBody>
+                  {tracks.map((track, idx) => (
+                    <TableRow key={track.track_uri}>
+                      <TableCell className="font-mono text-[10px] text-[#8d8c84]">
+                        {String(idx + 1).padStart(2, '0')}
+                      </TableCell>
+                      <TableCell className="max-w-[260px]">
+                        <div className="truncate font-medium text-[#efeee8]">{track.track_name}</div>
+                        <div className="truncate text-[10px] text-[#8d8c84]">{track.all_artists}</div>
+                      </TableCell>
+                      <TableCell className="max-w-[180px] truncate text-[#8d8c84]">
+                        {track.album_name || '—'}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-xs font-semibold text-[#89b471] tabular-nums">
+                        {track.play_count}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-[11px] text-[#8d8c84] tabular-nums">
+                        {formatDuration(track.duration_ms)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {track.spotify_url.startsWith('https://') && (
+                          <a
+                            href={track.spotify_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open in Spotify"
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-none border border-transparent text-[#8d8c84] transition-colors hover:border-[#45453e] hover:bg-[#141412] hover:text-[#89b471]"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

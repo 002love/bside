@@ -3,18 +3,21 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonStyles = cva(
-  'inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-emerald-500 disabled:pointer-events-none disabled:opacity-45 cursor-pointer',
+  'inline-flex items-center justify-center gap-1.5 rounded-none font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#89b471] disabled:pointer-events-none disabled:opacity-45 cursor-pointer',
   {
     variants: {
       variant: {
-        primary: 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400',
-        secondary: 'border border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50',
-        ghost: 'text-zinc-400 hover:bg-zinc-800/70 hover:text-zinc-100',
-        outline: 'border border-zinc-800 bg-transparent text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100',
+        primary:
+          'border border-[#efeee8] bg-[#efeee8] text-[#111110] shadow-moss-interactive hover:bg-[#ffffff]',
+        secondary:
+          'border border-[#2b2b27] bg-[#181816] text-[#efeee8] hover:border-[#45453e] hover:bg-[#20201d]',
+        ghost: 'text-[#8d8c84] hover:bg-[#20201d] hover:text-[#efeee8]',
+        outline:
+          'border border-[#45453e] bg-transparent text-[#efeee8] hover:border-[#89b471] hover:bg-[#20201d]',
       },
       size: {
-        sm: 'h-7 px-2.5 text-xs',
-        md: 'h-8 px-3 text-xs',
+        sm: 'h-7 px-2.5 text-[11px]',
+        md: 'h-8 px-3 text-[11px]',
         icon: 'h-8 w-8',
       },
     },

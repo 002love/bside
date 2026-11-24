@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   BarChart3,
   Clock,
-  Disc3,
   GitCompare,
   ListMusic,
+  Radio,
   RefreshCw,
   Users,
 } from 'lucide-react';
@@ -19,11 +19,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { PixelDot } from '@/components/PixelEq';
+import { LiveNowSection } from '@/components/LiveNowSection';
 import { OverviewTab } from '@/components/tabs/OverviewTab';
 import { HistoryTab } from '@/components/tabs/HistoryTab';
 import { PlaylistsTab } from '@/components/tabs/PlaylistsTab';
 import { OverlapTab } from '@/components/tabs/OverlapTab';
 import { ProfilesTab } from '@/components/tabs/ProfilesTab';
+import { useLiveFeed } from '@/hooks/useLiveFeed';
 import { cn } from '@/lib/utils';
 import type { FriendSummary, OverviewResponse, TimeframeKey } from '@/types/api';
 
@@ -47,10 +50,18 @@ export function App() {
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [loadingOverview, setLoadingOverview] = useState(true);
 
+  const live = useLiveFeed();
+
   const friendFilter = selectedFriend === ALL_FRIENDS_VALUE ? '' : selectedFriend;
 
   const triggerRefresh = useCallback(() => {
     setRefreshTick((t) => t + 1);
+    void live.pollNow();
+  }, [live.pollNow]);
+
+  const handleSelectLiveFriend = useCallback((userUri: string) => {
+    setSelectedFriend(userUri);
+    setActiveTab('overview');
   }, []);
 
   useEffect(() => {
@@ -89,70 +100,124 @@ export function App() {
     };
   }, [friendFilter, timeframe, refreshTick]);
 
-  const liveCount = friends.filter((f) => f.is_live).length;
+  const liveSpinningCount = live.snapshot
+    ? live.snapshot.friends.filter((f) => f.playing).length
+    : friends.filter((f) => f.is_live).length;
+
+  const liveConnected = live.snapshot?.connected ?? false;
+
+  // Merge live friends into selector if they aren't in SQLite overview yet
+  const selectorFriends = (() => {
+    const map = new Map<string, { user_uri: string; user_name: string; is_live: boolean }>();
+    for (const f of friends) {
+      map.set(f.user_uri, {
+        user_uri: f.user_uri,
+        user_name: f.user_name,
+        is_live: f.is_live,
+      });
+    }
+    if (live.snapshot) {
+      for (const lf of live.snapshot.friends) {
+        const existing = map.get(lf.user_uri);
+        map.set(lf.user_uri, {
+          user_uri: lf.user_uri,
+          user_name: existing?.user_name || lf.user_name,
+          is_live: lf.playing,
+        });
+      }
+    }
+    return Array.from(map.values());
+  })();
 
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen bg-zinc-950 text-zinc-100">
-        {/* Top Bar */}
-        <header className="sticky top-0 z-30 border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur-md">
+      <div className="flex min-h-screen flex-col bg-[#111110] bg-pixel-grid text-[#efeee8]">
+        {/* Crisp Editorial Top Header */}
+        <header className="sticky top-0 z-30 border-b border-[#2b2b27] bg-[#111110]/95 backdrop-blur-sm">
           <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            {/* Wordmark */}
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
-                <Disc3 className="h-4 w-4" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold tracking-tight text-zinc-50">bside</span>
-                  {liveCount > 0 && (
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      {liveCount} live
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-zinc-500">Local Spotify Analytics</p>
-              </div>
+            {/* Brand Wordmark + Live Status */}
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => setActiveTab('overview')}
+                className="flex items-baseline gap-0.5 font-display text-3xl font-extrabold leading-none tracking-tight text-[#efeee8] cursor-pointer"
+              >
+                <span>bside</span>
+                <span className="inline-block h-[7px] w-[7px] bg-[#89b471]" aria-hidden="true" />
+              </button>
+
+              <div className="hidden h-5 w-px bg-[#2b2b27] sm:block" />
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('live')}
+                className="inline-flex items-center gap-2 border border-[#2b2b27] bg-[#141412] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest transition-colors hover:border-[#45453e] cursor-pointer"
+                title="Open Realtime On Air Deck"
+              >
+                <PixelDot
+                  active={liveSpinningCount > 0}
+                  tone={
+                    liveSpinningCount > 0
+                      ? 'sage'
+                      : liveConnected
+                        ? 'muted'
+                        : 'amber'
+                  }
+                />
+                {liveSpinningCount > 0 ? (
+                  <span className="text-[#89b471]">LIVE &middot; {liveSpinningCount} SPINNING</span>
+                ) : liveConnected ? (
+                  <span className="text-[#8d8c84]">LIVE &middot; IDLE</span>
+                ) : (
+                  <span className="text-[#8d8c84]">
+                    {live.snapshot?.status ? live.snapshot.status.toUpperCase() : 'ARCHIVE'}
+                  </span>
+                )}
+              </button>
             </div>
 
             {/* Global Controls */}
-            <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2">
               {/* Friend Filter */}
-              <Select value={selectedFriend} onValueChange={setSelectedFriend}>
-                <SelectTrigger className="w-44">
-                  <SelectValue placeholder="All friends" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL_FRIENDS_VALUE}>All friends</SelectItem>
-                  {friends.map((f) => (
-                    <SelectItem key={f.user_uri} value={f.user_uri}>
-                      <span className="flex items-center gap-2">
-                        <span
-                          className={cn(
-                            'h-1.5 w-1.5 rounded-full',
-                            f.is_live ? 'bg-emerald-400' : 'bg-zinc-600',
-                          )}
-                        />
-                        <span>{f.user_name}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-1.5">
+                <span className="hidden font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84] md:inline">
+                  FRIEND
+                </span>
+                <Select value={selectedFriend} onValueChange={setSelectedFriend}>
+                  <SelectTrigger className="w-44">
+                    <SelectValue placeholder="ALL FRIENDS" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_FRIENDS_VALUE}>ALL FRIENDS</SelectItem>
+                    {selectorFriends.map((f) => (
+                      <SelectItem key={f.user_uri} value={f.user_uri}>
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'h-1.5 w-1.5 shrink-0',
+                              f.is_live ? 'bg-[#89b471]' : 'bg-[#45453e]',
+                            )}
+                          />
+                          <span className="truncate">{f.user_name}</span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
               {/* Timeframe Segmented Control */}
-              <div className="inline-flex items-center rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+              <div className="inline-flex items-center border border-[#2b2b27] bg-[#141412]">
                 {TIMEFRAMES.map((tf) => (
                   <button
                     key={tf.key}
                     type="button"
                     onClick={() => setTimeframe(tf.key)}
                     className={cn(
-                      'rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer',
+                      'border-r border-[#2b2b27] last:border-r-0 px-2.5 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors cursor-pointer',
                       timeframe === tf.key
-                        ? 'bg-zinc-800 text-emerald-400 shadow-sm'
-                        : 'text-zinc-400 hover:text-zinc-200',
+                        ? 'bg-[#efeee8] text-[#111110]'
+                        : 'text-[#8d8c84] hover:bg-[#20201d] hover:text-[#efeee8]',
                     )}
                   >
                     {tf.label}
@@ -160,23 +225,13 @@ export function App() {
                 ))}
               </div>
 
-              {/* Refresh & Auto-Refresh */}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={triggerRefresh}
-                title="Refresh data"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', loadingOverview && 'animate-spin')} />
-                Refresh
-              </Button>
-
-              <div className="flex items-center gap-1.5 rounded-lg border border-zinc-800/80 bg-zinc-900/70 px-2.5 py-1">
+              {/* Auto-Refresh Toggle */}
+              <div className="flex h-8 items-center gap-2 border border-[#2b2b27] bg-[#141412] px-2.5">
                 <label
                   htmlFor="auto-refresh-toggle"
-                  className="text-[11px] font-medium text-zinc-400 cursor-pointer"
+                  className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[#8d8c84] cursor-pointer"
                 >
-                  Auto
+                  AUTO
                 </label>
                 <Switch
                   id="auto-refresh-toggle"
@@ -184,40 +239,92 @@ export function App() {
                   onCheckedChange={setAutoRefresh}
                 />
               </div>
+
+              {/* Outlined Refresh Button */}
+              <Button
+                variant="outline"
+                size="md"
+                onClick={triggerRefresh}
+                title="Refresh analytics and poll live activity"
+              >
+                <RefreshCw
+                  className={cn(
+                    'h-3 w-3',
+                    (loadingOverview || live.polling) && 'animate-spin',
+                  )}
+                />
+                REFRESH
+              </Button>
             </div>
           </div>
         </header>
 
-        {/* Main Content */}
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+        {/* Main Workspace */}
+        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6">
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <div className="overflow-x-auto pb-1">
               <TabsList>
+                <TabsTrigger value="live">
+                  <Radio className="h-3.5 w-3.5" />
+                  <span>LIVE</span>
+                  {liveSpinningCount > 0 && (
+                    <span className="ml-0.5 border border-current px-1 py-0 text-[9px] leading-tight">
+                      {liveSpinningCount}
+                    </span>
+                  )}
+                </TabsTrigger>
                 <TabsTrigger value="overview">
                   <BarChart3 className="h-3.5 w-3.5" />
-                  Overview
+                  OVERVIEW
                 </TabsTrigger>
                 <TabsTrigger value="history">
                   <Clock className="h-3.5 w-3.5" />
-                  History
+                  HISTORY
                 </TabsTrigger>
                 <TabsTrigger value="playlists">
                   <ListMusic className="h-3.5 w-3.5" />
-                  Playlists
+                  PLAYLISTS
                 </TabsTrigger>
                 <TabsTrigger value="overlap">
                   <GitCompare className="h-3.5 w-3.5" />
-                  Overlap
+                  OVERLAP
                 </TabsTrigger>
                 <TabsTrigger value="profiles">
                   <Users className="h-3.5 w-3.5" />
-                  Profiles & Changes
+                  PROFILES
                 </TabsTrigger>
               </TabsList>
             </div>
 
+            <TabsContent value="live">
+              <LiveNowSection
+                snapshot={live.snapshot}
+                loading={live.loading}
+                polling={live.polling}
+                now={live.now}
+                onPollNow={live.pollNow}
+                onSelectFriend={handleSelectLiveFriend}
+                variant="full"
+              />
+            </TabsContent>
+
             <TabsContent value="overview">
-              <OverviewTab data={overview} loading={loadingOverview} />
+              <OverviewTab
+                data={overview}
+                loading={loadingOverview}
+                liveStrip={
+                  <LiveNowSection
+                    snapshot={live.snapshot}
+                    loading={live.loading}
+                    polling={live.polling}
+                    now={live.now}
+                    onPollNow={live.pollNow}
+                    onSelectFriend={handleSelectLiveFriend}
+                    variant="compact"
+                    onOpenLiveTab={() => setActiveTab('live')}
+                  />
+                }
+              />
             </TabsContent>
 
             <TabsContent value="history">
@@ -245,6 +352,19 @@ export function App() {
             </TabsContent>
           </Tabs>
         </main>
+
+        {/* Editorial Footer */}
+        <footer className="mt-10 border-t border-[#2b2b27] bg-[#141412]">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+            <div className="flex items-baseline gap-0.5 font-display text-xl font-extrabold tracking-tight text-[#efeee8]">
+              <span>bside</span>
+              <span className="inline-block h-[5px] w-[5px] bg-[#89b471]" aria-hidden="true" />
+            </div>
+            <p className="font-mono text-[10px] font-medium uppercase tracking-widest text-[#8d8c84]">
+              LOCAL-FIRST SPOTIFY ANALYTICS &middot; SQLITE + LIBRESPOT
+            </p>
+          </div>
+        </footer>
       </div>
     </TooltipProvider>
   );
