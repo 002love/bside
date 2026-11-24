@@ -3,10 +3,11 @@ use std::collections::{BTreeSet, HashMap};
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Utc};
 use rusqlite::{OptionalExtension, params};
+use serde::Serialize;
 
 use super::{Database, millis_to_local};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 pub struct StatsSummary {
     pub total_plays: i64,

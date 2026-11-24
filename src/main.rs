@@ -3,6 +3,7 @@ mod db;
 mod format;
 mod service;
 mod spotify;
+mod web;
 
 use anyhow::Result;
 

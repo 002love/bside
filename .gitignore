@@ -3,3 +3,7 @@
 *.db-wal
 *.db-shm
 .DS_Store
+web/node_modules
+web/dist/*
+!web/dist/.gitkeep
+*.tsbuildinfo

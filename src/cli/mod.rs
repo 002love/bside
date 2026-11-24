@@ -188,6 +188,21 @@ enum Commands {
         #[command(subcommand)]
         action: ServiceAction,
     },
+
+    /// Launch the embedded local web dashboard
+    Ui {
+        /// Bind host address (default: 127.0.0.1)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// Port to listen on (default: 8787)
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+
+        /// Do not auto-open the dashboard in your default browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -384,6 +399,12 @@ pub async fn run() -> Result<()> {
             ServiceAction::Status => service::status()?,
             ServiceAction::Logs { lines } => service::logs(&service::default_log_path(), lines)?,
         },
+
+        Commands::Ui {
+            host,
+            port,
+            no_open,
+        } => crate::web::run_server(&db_path, &host, port, !no_open).await?,
     }
 
     Ok(())

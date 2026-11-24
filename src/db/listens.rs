@@ -5,7 +5,23 @@ use serde::Serialize;
 
 use crate::spotify::FriendActivity;
 
-use super::{Database, format_timestamp_local};
+use super::{Database, format_timestamp_local, spotify_uri_to_url};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FriendSummary {
+    pub user_uri: String,
+    pub user_name: String,
+    pub image_url: Option<String>,
+    pub total_plays: i64,
+    pub last_active_ms: i64,
+    pub last_active_local: String,
+    pub latest_track_uri: String,
+    pub latest_track_name: String,
+    pub latest_artist_name: String,
+    pub latest_cover_url: Option<String>,
+    pub latest_spotify_url: String,
+    pub is_live: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ListenRecord {
@@ -261,11 +277,26 @@ impl Database {
         days: Option<i64>,
         limit: Option<usize>,
     ) -> Result<Vec<ListenRecord>> {
+        self.query_history_search(friend_filter, days, limit, None)
+    }
+
+    pub fn query_history_search(
+        &self,
+        friend_filter: Option<&str>,
+        days: Option<i64>,
+        limit: Option<usize>,
+        search_query: Option<&str>,
+    ) -> Result<Vec<ListenRecord>> {
         let since_ms = days
             .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
             .unwrap_or(0);
         let filter_pattern = friend_filter
             .map(|f| format!("%{}%", f.trim().to_lowercase()))
+            .unwrap_or_else(|| "%".to_string());
+        let search_pattern = search_query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("%{}%", q.to_lowercase()))
             .unwrap_or_else(|| "%".to_string());
         let limit_val = limit.map(|l| l as i64).unwrap_or(-1);
 
@@ -286,56 +317,139 @@ impl Database {
             FROM listens
             WHERE played_at_ms >= ?1
               AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+              AND (
+                  ?3 = '%'
+                  OR LOWER(track_name) LIKE ?3
+                  OR LOWER(artist_name) LIKE ?3
+                  OR LOWER(COALESCE(all_artists, '')) LIKE ?3
+                  OR LOWER(COALESCE(album_name, '')) LIKE ?3
+                  OR LOWER(COALESCE(context_name, '')) LIKE ?3
+                  OR LOWER(user_name) LIKE ?3
+              )
             ORDER BY played_at_ms DESC
-            LIMIT ?3
+            LIMIT ?4
             ",
         )?;
 
-        let rows = stmt.query_map(params![since_ms, filter_pattern, limit_val], |row| {
-            let played_at_ms: i64 = row.get(1)?;
-            let explicit_int: Option<i64> = row.get(17)?;
-            let ctx_priv_int: i64 = row.get(25)?;
-            let skipped_int: Option<i64> = row.get(28)?;
-            let inferred_repeat_int: i64 = row.get(29)?;
-            Ok(ListenRecord {
-                id: row.get(0)?,
-                played_at_ms,
-                played_at_local: format_timestamp_local(played_at_ms),
-                logged_at_ms: row.get(2)?,
-                user_uri: row.get(3)?,
-                user_name: row.get(4)?,
-                track_uri: row.get(5)?,
-                track_name: row.get(6)?,
-                artist_name: row.get(7)?,
-                artist_uri: row.get(8)?,
-                album_name: row.get(9)?,
-                album_uri: row.get(10)?,
-                context_name: row.get(11)?,
-                context_uri: row.get(12)?,
-                item_type: row.get(13)?,
-                all_artists: row.get(14)?,
-                duration_ms: row.get(15)?,
-                popularity: row.get(16)?,
-                explicit: explicit_int.map(|v| v != 0),
-                album_type: row.get(18)?,
-                release_date: row.get(19)?,
-                album_label: row.get(20)?,
-                cover_url: row.get(21)?,
-                isrc: row.get(22)?,
-                context_type: row.get(23)?,
-                context_owner: row.get(24)?,
-                context_is_private: ctx_priv_int != 0,
-                ended_at_ms: row.get(26)?,
-                listened_ms: row.get(27)?,
-                was_skipped: skipped_int.map(|v| v != 0),
-                inferred_repeat: inferred_repeat_int != 0,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![since_ms, filter_pattern, search_pattern, limit_val],
+            |row| {
+                let played_at_ms: i64 = row.get(1)?;
+                let explicit_int: Option<i64> = row.get(17)?;
+                let ctx_priv_int: i64 = row.get(25)?;
+                let skipped_int: Option<i64> = row.get(28)?;
+                let inferred_repeat_int: i64 = row.get(29)?;
+                Ok(ListenRecord {
+                    id: row.get(0)?,
+                    played_at_ms,
+                    played_at_local: format_timestamp_local(played_at_ms),
+                    logged_at_ms: row.get(2)?,
+                    user_uri: row.get(3)?,
+                    user_name: row.get(4)?,
+                    track_uri: row.get(5)?,
+                    track_name: row.get(6)?,
+                    artist_name: row.get(7)?,
+                    artist_uri: row.get(8)?,
+                    album_name: row.get(9)?,
+                    album_uri: row.get(10)?,
+                    context_name: row.get(11)?,
+                    context_uri: row.get(12)?,
+                    item_type: row.get(13)?,
+                    all_artists: row.get(14)?,
+                    duration_ms: row.get(15)?,
+                    popularity: row.get(16)?,
+                    explicit: explicit_int.map(|v| v != 0),
+                    album_type: row.get(18)?,
+                    release_date: row.get(19)?,
+                    album_label: row.get(20)?,
+                    cover_url: row.get(21)?,
+                    isrc: row.get(22)?,
+                    context_type: row.get(23)?,
+                    context_owner: row.get(24)?,
+                    context_is_private: ctx_priv_int != 0,
+                    ended_at_ms: row.get(26)?,
+                    listened_ms: row.get(27)?,
+                    was_skipped: skipped_int.map(|v| v != 0),
+                    inferred_repeat: inferred_repeat_int != 0,
+                })
+            },
+        )?;
 
         let mut records = Vec::new();
         for r in rows {
             records.push(r?);
         }
         Ok(records)
+    }
+
+    pub fn query_friends_summary(&self) -> Result<Vec<FriendSummary>> {
+        let now_ms = Utc::now().timestamp_millis();
+        let mut stmt = self.conn.prepare(
+            "
+            WITH ranked AS (
+                SELECT
+                    l.user_uri,
+                    l.user_name,
+                    l.played_at_ms,
+                    l.logged_at_ms,
+                    l.track_uri,
+                    l.track_name,
+                    COALESCE(NULLIF(l.all_artists, ''), l.artist_name) AS artist_display,
+                    l.cover_url,
+                    l.is_playing_seen,
+                    l.ended_at_ms,
+                    COUNT(*) OVER (PARTITION BY l.user_uri) AS total_plays,
+                    ROW_NUMBER() OVER (PARTITION BY l.user_uri ORDER BY l.played_at_ms DESC, l.id DESC) AS rn
+                FROM listens l
+            )
+            SELECT
+                r.user_uri,
+                r.user_name,
+                p.image_url,
+                r.total_plays,
+                r.played_at_ms,
+                r.logged_at_ms,
+                r.track_uri,
+                r.track_name,
+                r.artist_display,
+                r.cover_url,
+                r.is_playing_seen,
+                r.ended_at_ms
+            FROM ranked r
+            LEFT JOIN friend_profiles p ON p.user_uri = r.user_uri
+            WHERE r.rn = 1
+            ORDER BY r.played_at_ms DESC, r.user_name COLLATE NOCASE ASC
+            ",
+        )?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let played_at_ms: i64 = row.get(4)?;
+                let logged_at_ms: i64 = row.get(5)?;
+                let track_uri: String = row.get(6)?;
+                let is_playing_seen: i64 = row.get(10)?;
+                let ended_at_ms: Option<i64> = row.get(11)?;
+                let recent_activity_ms = played_at_ms.max(logged_at_ms);
+                let is_live = ended_at_ms.is_none()
+                    && is_playing_seen != 0
+                    && (now_ms - recent_activity_ms).abs() <= 10 * 60 * 1000;
+                Ok(FriendSummary {
+                    user_uri: row.get(0)?,
+                    user_name: row.get(1)?,
+                    image_url: row.get(2)?,
+                    total_plays: row.get(3)?,
+                    last_active_ms: played_at_ms,
+                    last_active_local: format_timestamp_local(played_at_ms),
+                    latest_spotify_url: spotify_uri_to_url(&track_uri),
+                    latest_track_uri: track_uri,
+                    latest_track_name: row.get(7)?,
+                    latest_artist_name: row.get(8)?,
+                    latest_cover_url: row.get(9)?,
+                    is_live,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(rows)
     }
 }
