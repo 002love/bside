@@ -1,6 +1,7 @@
 mod cli;
 mod db;
 mod format;
+mod service;
 mod spotify;
 
 use anyhow::Result;

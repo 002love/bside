@@ -3,9 +3,10 @@ mod watch;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::service::{self, ServiceConfig};
 use crate::spotify::FriendActivity;
 
 #[derive(Parser)]
@@ -181,6 +182,53 @@ enum Commands {
         #[arg(short, long)]
         days: Option<i64>,
     },
+
+    /// Manage the background watch daemon (macOS launchd, Linux systemd, Windows Task Scheduler)
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install, enable, and start the background watch service
+    Install {
+        /// Filter to specific friend(s) by name or Spotify URI (repeatable; omit to log all)
+        #[arg(short, long)]
+        friend: Vec<String>,
+
+        /// Polling interval in seconds (default 15, minimum 10)
+        #[arg(short, long, default_value_t = 15)]
+        interval: u64,
+
+        /// Profile sync interval in seconds (default 1800, 0 to disable)
+        #[arg(long, default_value_t = 1800)]
+        profile_interval: u64,
+
+        /// Maximum consecutive inferred repeat cycles per single continuous track play
+        #[arg(long, default_value_t = 10)]
+        max_inferred_repeats: u32,
+    },
+
+    /// Stop and remove the background watch service
+    Uninstall,
+
+    /// Start the installed background watch service
+    Start,
+
+    /// Stop the running background watch service
+    Stop,
+
+    /// Show the current status of the background watch service
+    Status,
+
+    /// Show recent log output from the background watch service
+    Logs {
+        /// Number of trailing log lines to display
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -242,8 +290,8 @@ pub(super) fn format_context_badge(item: &FriendActivity) -> String {
 
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
-    let cache_dir = resolve_cache_dir(cli.cache_dir);
-    let db_path = resolve_db_path(cli.db);
+    let cache_dir = resolve_cache_dir(cli.cache_dir.clone());
+    let db_path = resolve_db_path(cli.db.clone());
 
     match cli.command {
         Commands::Login {
@@ -308,6 +356,34 @@ pub async fn run() -> Result<()> {
             friend,
             days,
         } => commands::run_export(&db_path, format, out, friend, days)?,
+
+        Commands::Service { action } => match action {
+            ServiceAction::Install {
+                friend,
+                interval,
+                profile_interval,
+                max_inferred_repeats,
+            } => {
+                let binary_path = std::env::current_exe()
+                    .context("Failed to determine path to current bside executable")?;
+                let config = ServiceConfig {
+                    binary_path,
+                    cache_dir: cli.cache_dir,
+                    db_path: cli.db,
+                    log_path: service::default_log_path(),
+                    friends: friend,
+                    interval,
+                    profile_interval,
+                    max_inferred_repeats,
+                };
+                service::install(&config, &cache_dir)?;
+            }
+            ServiceAction::Uninstall => service::uninstall()?,
+            ServiceAction::Start => service::start()?,
+            ServiceAction::Stop => service::stop()?,
+            ServiceAction::Status => service::status()?,
+            ServiceAction::Logs { lines } => service::logs(&service::default_log_path(), lines)?,
+        },
     }
 
     Ok(())
