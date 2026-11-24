@@ -16,7 +16,7 @@ The flip side of Spotify — a lightweight, single-binary Rust CLI & embedded lo
 - **Sessions, skips & repeat loops** — tracks live `isPlaying` transitions to separate skips from full plays, measure real listening time, and infer consecutive loops when a track plays continuously past its duration.
 - **Hidden playlist reconstruction** — captures playback contexts including **Liked Songs** (`:collection`) and inaccessible private playlists, then rebuilds observed tracklists into a table, paste-ready Spotify URLs, `.m3u8`, CSV, or JSON.
 - **Profile & playlist changelog** — snapshots friend profiles (followers, public playlists, recently played artists) and records a chronological audit log (`changes`) of display name changes, follower deltas, and added/removed playlists.
-- **Embedded local Web UI (`bside ui`)** — dark-mode `shadcn/ui` dashboard bundled directly inside the single binary (`axum` + `rust-embed`) with interactive 7×24 activity heatmaps, charts, searchable history with cover art, one-click playlist rebuild exports, and taste overlap views.
+- **Embedded local Web UI (`bside ui`)** — dark editorial dashboard bundled directly inside the single binary (`axum` + `rust-embed`) with a realtime **On Air** live feed (SSE), spinning vinyl sleeves, interactive 7×24 activity heatmaps, charts, searchable history with cover art, one-click playlist rebuild exports, and taste overlap views.
 - **Cross-platform background daemon (`bside service`)** — one-command persistent background logging via `launchd` (macOS), `systemd --user` (Linux), and Task Scheduler (Windows).
 
 ## Install
@@ -68,7 +68,7 @@ Credentials and the SQLite database live in your OS data directory by default (`
 | `bside friends` | Live Friend Activity snapshot (`--friend`, `--raw`) |
 | `bside watch` | Foreground logger with skip/repeat/session tracking & profile sync |
 | `bside service` | Background daemon (`install`, `start`, `stop`, `status`, `logs`, `uninstall`) |
-| `bside ui` | Launch the embedded local web dashboard (`--port 8787`, `--no-open`) |
+| `bside ui` | Launch the embedded local web dashboard with realtime SSE live feed (`--port 8787`, `--no-log`, `--offline`) |
 | `bside profiles` | View or refresh (`--refresh`) friend profiles, followers & public playlists |
 | `bside changes` | Chronological audit log of profile, follower & playlist changes |
 | `bside contexts` | List all discovered contexts (`--private-only` for Liked Songs & private playlists) |
@@ -89,8 +89,10 @@ bside service install --interval 15
 bside service status
 bside service logs -n 50
 
-# Launch embedded local web UI
+# Launch embedded local web UI (live feed + logging, or --no-log if `bside service` is running)
 bside ui --port 8787
+bside ui --no-log
+bside ui --offline
 
 # Inspect all private contexts (Liked Songs & private playlists)
 bside contexts --private-only
