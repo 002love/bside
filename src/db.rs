@@ -28,6 +28,7 @@ const LISTENS_MIGRATIONS: &[(&str, &str)] = &[
     ("ended_at_ms", "INTEGER"),
     ("listened_ms", "INTEGER"),
     ("was_skipped", "INTEGER"),
+    ("inferred_repeat", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +63,7 @@ pub struct ListenRecord {
     pub ended_at_ms: Option<i64>,
     pub listened_ms: Option<i64>,
     pub was_skipped: Option<bool>,
+    pub inferred_repeat: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ pub struct StatsSummary {
     pub longest_streak_days: i64,
     pub current_streak_days: i64,
     pub weekday: [i64; 7],
+    pub heatmap_grid: [[i64; 24]; 7],
     pub session_count: i64,
     pub avg_session_ms: Option<i64>,
 }
@@ -99,7 +102,21 @@ pub struct StatsSummary {
 pub struct ProfileDiff {
     pub renamed_from: Option<String>,
     pub new_playlists: Vec<String>,
+    pub removed_playlists: Vec<String>,
+    pub new_recent_artists: Vec<String>,
     pub followers_delta: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+pub struct ProfileEvent {
+    pub id: i64,
+    pub detected_at_ms: i64,
+    pub detected_at_local: String,
+    pub user_uri: String,
+    pub user_name: String,
+    pub event_type: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,6 +263,7 @@ impl Database {
                 ended_at_ms INTEGER,
                 listened_ms INTEGER,
                 was_skipped INTEGER,
+                inferred_repeat INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(user_uri, track_uri, played_at_ms)
             );
 
@@ -283,6 +301,15 @@ impl Database {
                 last_seen_ms INTEGER NOT NULL,
                 PRIMARY KEY (user_uri, playlist_uri)
             );
+
+            CREATE TABLE IF NOT EXISTS profile_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                detected_at_ms INTEGER NOT NULL,
+                user_uri TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                summary TEXT NOT NULL
+            );
             ",
         )?;
 
@@ -302,6 +329,8 @@ impl Database {
                 ON presence_sessions(user_uri, started_at_ms DESC);
             CREATE INDEX IF NOT EXISTS idx_public_playlists_user
                 ON friend_public_playlists(user_uri);
+            CREATE INDEX IF NOT EXISTS idx_profile_events_time
+                ON profile_events(detected_at_ms DESC);
             ",
         )?;
 
@@ -312,6 +341,26 @@ impl Database {
     /// Returns `Ok(true)` if a new row was inserted, `Ok(false)` if it was a duplicate.
     /// If the row already exists and `activity.playing` is true, updates `is_playing_seen = 1`.
     pub fn insert_listen(&self, activity: &FriendActivity) -> Result<bool> {
+        self.insert_listen_internal(activity, activity.timestamp, activity.playing, false)
+    }
+
+    /// Inserts an inferred repeat cycle for a track playing continuously beyond its duration.
+    #[allow(dead_code)]
+    pub fn insert_inferred_repeat(
+        &self,
+        activity: &FriendActivity,
+        cycle_played_at_ms: i64,
+    ) -> Result<bool> {
+        self.insert_listen_internal(activity, cycle_played_at_ms, true, true)
+    }
+
+    fn insert_listen_internal(
+        &self,
+        activity: &FriendActivity,
+        played_at_ms: i64,
+        is_playing: bool,
+        inferred_repeat: bool,
+    ) -> Result<bool> {
         let now_ms = Utc::now().timestamp_millis();
         let all_artists = activity.all_artists_display();
         let explicit_val = activity.track.explicit.map(|b| if b { 1i64 } else { 0i64 });
@@ -321,7 +370,8 @@ impl Database {
             .as_deref()
             .or(activity.track.image_url.as_deref());
         let context_is_private = if activity.is_private_context() { 1i64 } else { 0i64 };
-        let is_playing_seen = if activity.playing { 1i64 } else { 0i64 };
+        let is_playing_seen = if is_playing { 1i64 } else { 0i64 };
+        let inferred_repeat_val = if inferred_repeat { 1i64 } else { 0i64 };
 
         let rows = self.conn.execute(
             "
@@ -337,15 +387,15 @@ impl Database {
                 track_number, disc_number, isrc,
                 album_type, release_date, album_label, cover_url,
                 context_type, context_owner, context_is_private,
-                is_playing_seen
+                is_playing_seen, inferred_repeat
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28
+                ?25, ?26, ?27, ?28, ?29
             )
             ",
             params![
-                activity.timestamp,
+                played_at_ms,
                 now_ms,
                 activity.user.uri,
                 activity.user.name,
@@ -373,10 +423,11 @@ impl Database {
                 activity.context_owner(),
                 context_is_private,
                 is_playing_seen,
+                inferred_repeat_val,
             ],
         )?;
 
-        if rows == 0 && activity.playing {
+        if rows == 0 && is_playing {
             self.conn.execute(
                 "
                 UPDATE listens
@@ -386,7 +437,7 @@ impl Database {
                   AND played_at_ms = ?3
                   AND is_playing_seen = 0
                 ",
-                params![activity.user.uri, activity.track.uri, activity.timestamp],
+                params![activity.user.uri, activity.track.uri, played_at_ms],
             )?;
         }
 
@@ -501,17 +552,17 @@ impl Database {
     #[allow(dead_code)]
     pub fn upsert_profile(&self, snapshot: &UserProfileSnapshot) -> Result<ProfileDiff> {
         let now_ms = Utc::now().timestamp_millis();
-        let existing: Option<(String, Option<i64>)> = self
+        let existing: Option<(String, Option<i64>, Option<String>)> = self
             .conn
             .query_row(
-                "SELECT user_name, followers_count FROM friend_profiles WHERE user_uri = ?1",
+                "SELECT user_name, followers_count, recently_played_artists_json FROM friend_profiles WHERE user_uri = ?1",
                 params![snapshot.user_uri],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
 
         let mut diff = ProfileDiff::default();
-        if let Some((old_name, old_followers)) = &existing {
+        if let Some((old_name, old_followers, old_artists_json)) = &existing {
             if !old_name.is_empty() && old_name != &snapshot.user_name {
                 diff.renamed_from = Some(old_name.clone());
             }
@@ -519,6 +570,40 @@ impl Database {
                 && old_f != new_f
             {
                 diff.followers_delta = Some(new_f - old_f);
+            }
+
+            let old_artists: Vec<NamedUri> = old_artists_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<NamedUri>>(s).ok())
+                .unwrap_or_default();
+            let old_artist_keys: HashSet<String> = old_artists
+                .iter()
+                .map(|a| {
+                    if !a.uri.is_empty() {
+                        a.uri.clone()
+                    } else {
+                        a.name.to_lowercase()
+                    }
+                })
+                .collect();
+            let mut seen_new_artists: HashSet<String> = HashSet::new();
+            for artist in &snapshot.recently_played_artists {
+                let key = if !artist.uri.is_empty() {
+                    artist.uri.clone()
+                } else {
+                    artist.name.to_lowercase()
+                };
+                if !key.is_empty()
+                    && !old_artist_keys.contains(&key)
+                    && seen_new_artists.insert(key)
+                {
+                    let label = if !artist.name.is_empty() {
+                        artist.name.clone()
+                    } else {
+                        artist.uri.clone()
+                    };
+                    diff.new_recent_artists.push(label);
+                }
             }
         }
 
@@ -552,22 +637,27 @@ impl Database {
             ],
         )?;
 
-        let mut existing_playlists: HashSet<String> = HashSet::new();
+        let mut existing_playlists: HashMap<String, String> = HashMap::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT playlist_uri FROM friend_public_playlists WHERE user_uri = ?1",
+                "SELECT playlist_uri, name FROM friend_public_playlists WHERE user_uri = ?1",
             )?;
-            let rows = stmt.query_map(params![snapshot.user_uri], |row| row.get::<_, String>(0))?;
+            let rows = stmt.query_map(params![snapshot.user_uri], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             for r in rows {
-                existing_playlists.insert(r?);
+                let (uri, name) = r?;
+                existing_playlists.insert(uri, name);
             }
         }
 
+        let mut incoming_playlist_uris: HashSet<String> = HashSet::new();
         for pl in &snapshot.public_playlists {
             if pl.uri.is_empty() {
                 continue;
             }
-            if existing.is_some() && !existing_playlists.contains(&pl.uri) {
+            incoming_playlist_uris.insert(pl.uri.clone());
+            if existing.is_some() && !existing_playlists.contains_key(&pl.uri) {
                 diff.new_playlists.push(pl.name.clone());
             }
 
@@ -598,7 +688,139 @@ impl Database {
             )?;
         }
 
+        if existing.is_some() {
+            let mut removed: Vec<(String, String)> = existing_playlists
+                .into_iter()
+                .filter(|(uri, _)| !incoming_playlist_uris.contains(uri))
+                .collect();
+            removed.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            for (uri, name) in removed {
+                let label = if !name.is_empty() { name } else { uri.clone() };
+                diff.removed_playlists.push(label);
+                self.conn.execute(
+                    "DELETE FROM friend_public_playlists WHERE user_uri = ?1 AND playlist_uri = ?2",
+                    params![snapshot.user_uri, uri],
+                )?;
+            }
+
+            // Record profile changelog events for already-seen users.
+            if let Some(old_name) = &diff.renamed_from {
+                self.insert_profile_event(
+                    now_ms,
+                    &snapshot.user_uri,
+                    &snapshot.user_name,
+                    "rename",
+                    &format!("Renamed from '{}' to '{}'", old_name, snapshot.user_name),
+                )?;
+            }
+            if let Some(delta) = diff.followers_delta
+                && delta != 0
+            {
+                let summary = match snapshot.followers_count {
+                    Some(total) => format!("Followers {delta:+} (now {total})"),
+                    None => format!("Followers {delta:+}"),
+                };
+                self.insert_profile_event(
+                    now_ms,
+                    &snapshot.user_uri,
+                    &snapshot.user_name,
+                    "followers",
+                    &summary,
+                )?;
+            }
+            for pl_name in &diff.new_playlists {
+                self.insert_profile_event(
+                    now_ms,
+                    &snapshot.user_uri,
+                    &snapshot.user_name,
+                    "playlist_added",
+                    &format!("Added public playlist '{pl_name}'"),
+                )?;
+            }
+            for pl_name in &diff.removed_playlists {
+                self.insert_profile_event(
+                    now_ms,
+                    &snapshot.user_uri,
+                    &snapshot.user_name,
+                    "playlist_removed",
+                    &format!("Removed public playlist '{pl_name}'"),
+                )?;
+            }
+            for artist in &diff.new_recent_artists {
+                self.insert_profile_event(
+                    now_ms,
+                    &snapshot.user_uri,
+                    &snapshot.user_name,
+                    "recent_artist",
+                    &format!("New recently played artist: {artist}"),
+                )?;
+            }
+        }
+
         Ok(diff)
+    }
+
+    fn insert_profile_event(
+        &self,
+        detected_at_ms: i64,
+        user_uri: &str,
+        user_name: &str,
+        event_type: &str,
+        summary: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "
+            INSERT INTO profile_events (
+                detected_at_ms, user_uri, user_name, event_type, summary
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ",
+            params![detected_at_ms, user_uri, user_name, event_type, summary],
+        )?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn query_profile_events(
+        &self,
+        friend_filter: Option<&str>,
+        days: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProfileEvent>> {
+        let since_ms = days
+            .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
+            .unwrap_or(0);
+        let filter_pattern = friend_filter
+            .map(|f| format!("%{}%", f.trim().to_lowercase()))
+            .unwrap_or_else(|| "%".to_string());
+        let limit_val = limit.map(|l| l as i64).unwrap_or(-1);
+
+        let mut stmt = self.conn.prepare(
+            "
+            SELECT id, detected_at_ms, user_uri, user_name, event_type, summary
+            FROM profile_events
+            WHERE detected_at_ms >= ?1
+              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            ORDER BY detected_at_ms DESC, id DESC
+            LIMIT ?3
+            ",
+        )?;
+
+        let rows = stmt
+            .query_map(params![since_ms, filter_pattern, limit_val], |row| {
+                let detected_at_ms: i64 = row.get(1)?;
+                Ok(ProfileEvent {
+                    id: row.get(0)?,
+                    detected_at_ms,
+                    detected_at_local: format_timestamp_local(detected_at_ms),
+                    user_uri: row.get(2)?,
+                    user_name: row.get(3)?,
+                    event_type: row.get(4)?,
+                    summary: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(rows)
     }
 
     #[allow(dead_code)]
@@ -816,7 +1038,7 @@ impl Database {
                 duration_ms, popularity, explicit,
                 album_type, release_date, album_label, cover_url, isrc,
                 context_type, context_owner, context_is_private,
-                ended_at_ms, listened_ms, was_skipped
+                ended_at_ms, listened_ms, was_skipped, inferred_repeat
             FROM listens
             WHERE played_at_ms >= ?1
               AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
@@ -830,6 +1052,7 @@ impl Database {
             let explicit_int: Option<i64> = row.get(17)?;
             let ctx_priv_int: i64 = row.get(25)?;
             let skipped_int: Option<i64> = row.get(28)?;
+            let inferred_repeat_int: i64 = row.get(29)?;
             Ok(ListenRecord {
                 id: row.get(0)?,
                 played_at_ms,
@@ -861,6 +1084,7 @@ impl Database {
                 ended_at_ms: row.get(26)?,
                 listened_ms: row.get(27)?,
                 was_skipped: skipped_int.map(|v| v != 0),
+                inferred_repeat: inferred_repeat_int != 0,
             })
         })?;
 
@@ -1078,6 +1302,7 @@ impl Database {
 
         let mut hourly = [0i64; 24];
         let mut weekday = [0i64; 7];
+        let mut heatmap_grid = [[0i64; 24]; 7];
         let mut active_date_set: BTreeSet<NaiveDate> = BTreeSet::new();
         {
             let mut ts_stmt = self.conn.prepare(
@@ -1094,12 +1319,15 @@ impl Database {
                 let ms = ts?;
                 if let Some(dt) = millis_to_local(ms) {
                     let hour = dt.hour() as usize;
+                    let wd = dt.weekday().num_days_from_monday() as usize;
                     if hour < 24 {
                         hourly[hour] += 1;
                     }
-                    let wd = dt.weekday().num_days_from_monday() as usize;
                     if wd < 7 {
                         weekday[wd] += 1;
+                    }
+                    if wd < 7 && hour < 24 {
+                        heatmap_grid[wd][hour] += 1;
                     }
                     active_date_set.insert(dt.date_naive());
                 }
@@ -1154,6 +1382,7 @@ impl Database {
             longest_streak_days,
             current_streak_days,
             weekday,
+            heatmap_grid,
             session_count,
             avg_session_ms,
         })
@@ -2130,6 +2359,173 @@ mod tests {
         assert_eq!(filtered.friend_pairs.len(), 1);
         assert_eq!(filtered.shared_tracks.len(), 1);
         assert_eq!(filtered.shared_tracks[0].track_name, "Shared One");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tracks_inferred_repeats() {
+        let (dir, db_path) = temp_db_path("inferred_repeats");
+        let db = Database::open(&db_path).unwrap();
+        let now_ms = Utc::now().timestamp_millis();
+
+        let base_ts = now_ms - 500_000;
+        let a = sample_activity(base_ts, "spotify:track:loop1", "Looping Track");
+        assert!(db.insert_listen(&a).unwrap());
+
+        let cycle2_ts = base_ts + 200_000;
+        assert!(db.insert_inferred_repeat(&a, cycle2_ts).unwrap());
+        // Duplicate repeat cycle is ignored
+        assert!(!db.insert_inferred_repeat(&a, cycle2_ts).unwrap());
+
+        let hist = db.query_history(Some("alice"), Some(1), Some(10)).unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].played_at_ms, cycle2_ts);
+        assert!(hist[0].inferred_repeat);
+        assert_eq!(hist[1].played_at_ms, base_ts);
+        assert!(!hist[1].inferred_repeat);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn populates_heatmap_grid_in_stats() {
+        let (dir, db_path) = temp_db_path("heatmap_grid");
+        let db = Database::open(&db_path).unwrap();
+        let now_ms = Utc::now().timestamp_millis();
+
+        let ts1 = now_ms - 60_000;
+        let ts2 = now_ms - 30_000;
+        let a1 = sample_activity(ts1, "spotify:track:h1", "Heat 1");
+        let a2 = sample_activity(ts2, "spotify:track:h2", "Heat 2");
+        db.insert_listen(&a1).unwrap();
+        db.insert_listen(&a2).unwrap();
+
+        let stats = db.query_stats(Some("alice"), Some(1)).unwrap();
+        let total_cells: i64 = stats
+            .heatmap_grid
+            .iter()
+            .flat_map(|row| row.iter())
+            .sum();
+        assert_eq!(total_cells, 2);
+
+        for ts in [ts1, ts2] {
+            let dt = millis_to_local(ts).unwrap();
+            let wd = dt.weekday().num_days_from_monday() as usize;
+            let hour = dt.hour() as usize;
+            assert!(stats.heatmap_grid[wd][hour] >= 1);
+            assert_eq!(stats.weekday[wd], stats.heatmap_grid[wd].iter().sum::<i64>());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_profile_changelog_events() {
+        let (dir, db_path) = temp_db_path("profile_events");
+        let db = Database::open(&db_path).unwrap();
+
+        let snap1 = UserProfileSnapshot {
+            user_uri: "spotify:user:bob".to_string(),
+            user_name: "Bob".to_string(),
+            image_url: None,
+            color: None,
+            followers_count: Some(10),
+            following_count: Some(20),
+            public_playlists: vec![
+                PublicPlaylist {
+                    uri: "spotify:playlist:pl1".to_string(),
+                    name: "Gym Mix".to_string(),
+                    owner_name: Some("Bob".to_string()),
+                    owner_uri: Some("spotify:user:bob".to_string()),
+                    followers_count: Some(5),
+                    image_url: None,
+                },
+                PublicPlaylist {
+                    uri: "spotify:playlist:pl_old".to_string(),
+                    name: "Old Mix".to_string(),
+                    owner_name: Some("Bob".to_string()),
+                    owner_uri: Some("spotify:user:bob".to_string()),
+                    followers_count: Some(1),
+                    image_url: None,
+                },
+            ],
+            recently_played_artists: vec![NamedUri {
+                uri: "spotify:artist:a1".to_string(),
+                name: "Daft Punk".to_string(),
+            }],
+        };
+
+        // First insert should not create changelog events.
+        let diff1 = db.upsert_profile(&snap1).unwrap();
+        assert!(diff1.renamed_from.is_none());
+        assert!(diff1.new_playlists.is_empty());
+        assert!(diff1.removed_playlists.is_empty());
+        assert!(diff1.new_recent_artists.is_empty());
+        assert!(db.query_profile_events(None, None, None).unwrap().is_empty());
+
+        // Second snapshot: rename, follower delta -2, pl_old removed, pl2 added, new artist Justice.
+        let snap2 = UserProfileSnapshot {
+            user_uri: "spotify:user:bob".to_string(),
+            user_name: "Bobby".to_string(),
+            image_url: None,
+            color: None,
+            followers_count: Some(8),
+            following_count: Some(20),
+            public_playlists: vec![
+                PublicPlaylist {
+                    uri: "spotify:playlist:pl1".to_string(),
+                    name: "Gym Mix".to_string(),
+                    owner_name: Some("Bobby".to_string()),
+                    owner_uri: Some("spotify:user:bob".to_string()),
+                    followers_count: Some(5),
+                    image_url: None,
+                },
+                PublicPlaylist {
+                    uri: "spotify:playlist:pl2".to_string(),
+                    name: "Road Trip".to_string(),
+                    owner_name: Some("Bobby".to_string()),
+                    owner_uri: Some("spotify:user:bob".to_string()),
+                    followers_count: Some(2),
+                    image_url: None,
+                },
+            ],
+            recently_played_artists: vec![
+                NamedUri {
+                    uri: "spotify:artist:a1".to_string(),
+                    name: "Daft Punk".to_string(),
+                },
+                NamedUri {
+                    uri: "spotify:artist:a2".to_string(),
+                    name: "Justice".to_string(),
+                },
+            ],
+        };
+
+        let diff2 = db.upsert_profile(&snap2).unwrap();
+        assert_eq!(diff2.renamed_from.as_deref(), Some("Bob"));
+        assert_eq!(diff2.followers_delta, Some(-2));
+        assert_eq!(diff2.new_playlists, vec!["Road Trip".to_string()]);
+        assert_eq!(diff2.removed_playlists, vec!["Old Mix".to_string()]);
+        assert_eq!(diff2.new_recent_artists, vec!["Justice".to_string()]);
+
+        let events = db.query_profile_events(Some("bobby"), Some(1), Some(20)).unwrap();
+        assert_eq!(events.len(), 5);
+        let types: HashSet<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        assert!(types.contains("rename"));
+        assert!(types.contains("followers"));
+        assert!(types.contains("playlist_added"));
+        assert!(types.contains("playlist_removed"));
+        assert!(types.contains("recent_artist"));
+
+        // Re-upserting identical snapshot should produce no new diffs or events.
+        let diff3 = db.upsert_profile(&snap2).unwrap();
+        assert!(diff3.renamed_from.is_none());
+        assert!(diff3.followers_delta.is_none());
+        assert!(diff3.new_playlists.is_empty());
+        assert!(diff3.removed_playlists.is_empty());
+        assert!(diff3.new_recent_artists.is_empty());
+        assert_eq!(db.query_profile_events(None, None, None).unwrap().len(), 5);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
