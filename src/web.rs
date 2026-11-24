@@ -1,29 +1,230 @@
+use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use axum::Json;
 use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Json;
+use axum::routing::{get, post};
+use chrono::Utc;
+use futures_util::stream::{self, Stream, StreamExt};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::db::{
     ContextSummary, Database, FriendSummary, ListenRecord, OverlapReport, ProfileEvent,
     RebuiltTrack, StatsSummary, StoredProfile, spotify_uri_to_url,
 };
+use crate::spotify::{FriendActivity, NameCache, connect_cached, fetch_buddylist, open_cache};
+
+const MIN_POLL_INTERVAL_SECS: u64 = 10;
+const MANUAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+const MANUAL_REFRESH_WAIT: Duration = Duration::from_secs(3);
+const SSE_KEEP_ALIVE_SECS: u64 = 15;
 
 #[derive(Embed)]
 #[folder = "web/dist"]
 struct WebAssets;
 
+pub struct UiConfig {
+    pub cache_dir: PathBuf,
+    pub db_path: PathBuf,
+    pub host: String,
+    pub port: u16,
+    pub open_browser: bool,
+    pub poll_interval_secs: u64,
+    pub offline: bool,
+    pub log_to_db: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveFriendItem {
+    pub user_uri: String,
+    pub user_name: String,
+    pub user_image_url: Option<String>,
+    pub playing: bool,
+    pub timestamp_ms: i64,
+    pub item_type: String,
+    pub track_uri: String,
+    pub track_name: String,
+    pub all_artists: String,
+    pub album_name: Option<String>,
+    pub cover_url: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub popularity: Option<i32>,
+    pub explicit: Option<bool>,
+    pub release_date: Option<String>,
+    pub context_name: Option<String>,
+    pub context_uri: Option<String>,
+    pub context_type: Option<String>,
+    pub context_owner: Option<String>,
+    pub context_is_private: bool,
+    pub spotify_url: String,
+}
+
+impl From<&FriendActivity> for LiveFriendItem {
+    fn from(a: &FriendActivity) -> Self {
+        let cover_url = a
+            .track
+            .cover_url
+            .clone()
+            .or_else(|| a.track.image_url.clone());
+
+        Self {
+            user_uri: a.user.uri.clone(),
+            user_name: a.user.name.clone(),
+            user_image_url: a.user.image_url.clone(),
+            playing: a.playing,
+            timestamp_ms: a.timestamp,
+            item_type: a.item_type().to_string(),
+            track_uri: a.track.uri.clone(),
+            track_name: a.track.name.clone(),
+            all_artists: a.all_artists_display(),
+            album_name: a.album_name().map(str::to_string),
+            cover_url,
+            duration_ms: a.duration_ms(),
+            popularity: a.track.popularity,
+            explicit: a.track.explicit,
+            release_date: a.track.release_date.clone(),
+            context_name: a.context_name().map(str::to_string),
+            context_uri: a.context_uri().map(str::to_string),
+            context_type: a.context_type().map(str::to_string),
+            context_owner: a.context_owner().map(str::to_string),
+            context_is_private: a.is_private_context(),
+            spotify_url: crate::format::spotify_uri_to_url(&a.track.uri),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSnapshot {
+    pub connected: bool,
+    pub status: String, // "live" | "connecting" | "offline" | "unauthenticated" | "error"
+    pub message: Option<String>,
+    pub account: Option<String>,
+    pub updated_at_ms: Option<i64>,
+    pub poll_interval_secs: u64,
+    pub friends: Vec<LiveFriendItem>,
+}
+
+fn sort_live_friends(friends: &mut [LiveFriendItem]) {
+    friends.sort_by(|a, b| {
+        b.playing
+            .cmp(&a.playing)
+            .then_with(|| b.timestamp_ms.cmp(&a.timestamp_ms))
+            .then_with(|| a.user_name.to_lowercase().cmp(&b.user_name.to_lowercase()))
+    });
+}
+
+pub struct LiveHub {
+    latest: RwLock<LiveSnapshot>,
+    tx: broadcast::Sender<LiveSnapshot>,
+    refresh_notify: Arc<Notify>,
+    last_manual_refresh: Mutex<Option<Instant>>,
+    offline: bool,
+}
+
+impl LiveHub {
+    pub fn new(poll_interval_secs: u64, offline: bool) -> Self {
+        let interval = poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+        let initial = if offline {
+            LiveSnapshot {
+                connected: false,
+                status: "offline".to_string(),
+                message: Some("Running in offline archive mode".to_string()),
+                account: None,
+                updated_at_ms: None,
+                poll_interval_secs: interval,
+                friends: Vec::new(),
+            }
+        } else {
+            LiveSnapshot {
+                connected: false,
+                status: "connecting".to_string(),
+                message: Some("Connecting to Spotify...".to_string()),
+                account: None,
+                updated_at_ms: None,
+                poll_interval_secs: interval,
+                friends: Vec::new(),
+            }
+        };
+
+        let (tx, _rx) = broadcast::channel(32);
+        Self {
+            latest: RwLock::new(initial),
+            tx,
+            refresh_notify: Arc::new(Notify::new()),
+            last_manual_refresh: Mutex::new(None),
+            offline,
+        }
+    }
+
+    pub async fn snapshot(&self) -> LiveSnapshot {
+        self.latest.read().await.clone()
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<LiveSnapshot> {
+        self.tx.subscribe()
+    }
+
+    pub async fn publish(&self, snapshot: LiveSnapshot) {
+        {
+            let mut guard = self.latest.write().await;
+            *guard = snapshot.clone();
+        }
+        let _ = self.tx.send(snapshot);
+    }
+
+    pub async fn request_refresh(&self) -> LiveSnapshot {
+        if self.offline {
+            return self.snapshot().await;
+        }
+
+        {
+            let mut last = self.last_manual_refresh.lock().await;
+            let now = Instant::now();
+            if let Some(prev) = *last
+                && now.duration_since(prev) < MANUAL_REFRESH_COOLDOWN
+            {
+                return self.snapshot().await;
+            }
+            *last = Some(now);
+        }
+
+        let mut rx = self.subscribe();
+        self.refresh_notify.notify_one();
+
+        let wait_result = tokio::time::timeout(MANUAL_REFRESH_WAIT, async {
+            loop {
+                match rx.recv().await {
+                    Ok(snapshot) => return Some(snapshot),
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        })
+        .await;
+
+        match wait_result {
+            Ok(Some(snapshot)) => snapshot,
+            _ => self.snapshot().await,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     db_path: Arc<PathBuf>,
+    live: Arc<LiveHub>,
 }
 
 #[derive(Debug, Serialize)]
@@ -271,6 +472,45 @@ async fn api_changes(
     Ok(Json(events))
 }
 
+fn snapshot_to_sse_event(snapshot: &LiveSnapshot) -> Event {
+    let data = serde_json::to_string(snapshot).unwrap_or_else(|_| "{}".to_string());
+    Event::default().event("snapshot").data(data)
+}
+
+async fn api_live(State(state): State<AppState>) -> Json<LiveSnapshot> {
+    Json(state.live.snapshot().await)
+}
+
+async fn api_live_stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let rx = state.live.subscribe();
+    let initial = state.live.snapshot().await;
+
+    let initial_stream = stream::once(async move {
+        Ok::<Event, Infallible>(snapshot_to_sse_event(&initial))
+    });
+
+    let updates_stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(snapshot) => Some(Ok::<Event, Infallible>(snapshot_to_sse_event(&snapshot))),
+            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+        }
+    });
+
+    let stream = initial_stream.chain(updates_stream);
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(SSE_KEEP_ALIVE_SECS))
+            .text("keep-alive"),
+    )
+}
+
+async fn api_live_refresh(State(state): State<AppState>) -> Json<LiveSnapshot> {
+    Json(state.live.request_refresh().await)
+}
+
 async fn api_not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
@@ -317,9 +557,218 @@ fn asset_response(path: &str, bytes: Vec<u8>) -> Response {
     response
 }
 
-pub fn build_router(db_path: PathBuf) -> Router {
+fn spawn_live_poller(
+    live: Arc<LiveHub>,
+    cache_dir: PathBuf,
+    db_path: PathBuf,
+    poll_interval_secs: u64,
+    log_to_db: bool,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let interval_secs = poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+
+    tokio::spawn(async move {
+        let has_credentials = open_cache(&cache_dir)
+            .ok()
+            .and_then(|cache| cache.credentials())
+            .is_some();
+
+        if !has_credentials {
+            live.publish(LiveSnapshot {
+                connected: false,
+                status: "unauthenticated".to_string(),
+                message: Some("Run `bside login` to enable live feed".to_string()),
+                account: None,
+                updated_at_ms: Some(Utc::now().timestamp_millis()),
+                poll_interval_secs: interval_secs,
+                friends: Vec::new(),
+            })
+            .await;
+            return;
+        }
+
+        let mut name_cache = NameCache::default();
+        let mut connect_errors: u32 = 0;
+
+        loop {
+            if *shutdown_rx.borrow() {
+                return;
+            }
+
+            let session = match connect_cached(&cache_dir).await {
+                Ok(session) => {
+                    connect_errors = 0;
+                    session
+                }
+                Err(err) => {
+                    let err_msg = format!("{err:#}");
+                    if err_msg.contains("No cached Spotify credentials") {
+                        live.publish(LiveSnapshot {
+                            connected: false,
+                            status: "unauthenticated".to_string(),
+                            message: Some("Run `bside login` to enable live feed".to_string()),
+                            account: None,
+                            updated_at_ms: Some(Utc::now().timestamp_millis()),
+                            poll_interval_secs: interval_secs,
+                            friends: Vec::new(),
+                        })
+                        .await;
+                        return;
+                    }
+
+                    connect_errors = connect_errors.saturating_add(1);
+                    eprintln!("[warn] Live feed connect failed (#{connect_errors}): {err_msg}");
+                    let prev = live.snapshot().await;
+                    live.publish(LiveSnapshot {
+                        connected: false,
+                        status: "error".to_string(),
+                        message: Some(format!("Connection failed: {err_msg}")),
+                        account: prev.account,
+                        updated_at_ms: prev.updated_at_ms,
+                        poll_interval_secs: interval_secs,
+                        friends: prev.friends,
+                    })
+                    .await;
+
+                    let backoff_secs = (5u64 * (1u64 << connect_errors.min(5))).min(300);
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                        _ = live.refresh_notify.notified() => {}
+                        _ = shutdown_rx.changed() => {
+                            return;
+                        }
+                    }
+                    continue;
+                }
+            };
+
+            let account = {
+                let username = session.username();
+                if username.is_empty() {
+                    None
+                } else {
+                    Some(username)
+                }
+            };
+            let mut consecutive_errors: u32 = 0;
+
+            loop {
+                if *shutdown_rx.borrow() {
+                    session.shutdown();
+                    return;
+                }
+
+                if session.is_invalid() {
+                    let prev = live.snapshot().await;
+                    live.publish(LiveSnapshot {
+                        connected: false,
+                        status: "connecting".to_string(),
+                        message: Some("Reconnecting to Spotify...".to_string()),
+                        account: account.clone(),
+                        updated_at_ms: prev.updated_at_ms,
+                        poll_interval_secs: interval_secs,
+                        friends: prev.friends,
+                    })
+                    .await;
+                    break;
+                }
+
+                match fetch_buddylist(&session, &mut name_cache).await {
+                    Ok(activities) => {
+                        consecutive_errors = 0;
+
+                        if log_to_db && !activities.is_empty() {
+                            let db_path_clone = db_path.clone();
+                            let activities_to_log = activities.clone();
+                            let log_res = tokio::task::spawn_blocking(move || -> Result<()> {
+                                let db = Database::open(&db_path_clone)?;
+                                for item in &activities_to_log {
+                                    db.insert_listen(item)?;
+                                }
+                                Ok(())
+                            })
+                            .await;
+                            match log_res {
+                                Ok(Ok(())) => {}
+                                Ok(Err(err)) => {
+                                    eprintln!("[warn] Failed to log live listens to SQLite: {err:#}");
+                                }
+                                Err(err) => {
+                                    eprintln!("[warn] Live DB logging task panicked: {err}");
+                                }
+                            }
+                        }
+
+                        let mut friends: Vec<LiveFriendItem> =
+                            activities.iter().map(LiveFriendItem::from).collect();
+                        sort_live_friends(&mut friends);
+
+                        live.publish(LiveSnapshot {
+                            connected: true,
+                            status: "live".to_string(),
+                            message: None,
+                            account: account.clone(),
+                            updated_at_ms: Some(Utc::now().timestamp_millis()),
+                            poll_interval_secs: interval_secs,
+                            friends,
+                        })
+                        .await;
+                    }
+                    Err(err) => {
+                        consecutive_errors = consecutive_errors.saturating_add(1);
+                        let err_msg = format!("{err:#}");
+                        eprintln!("[warn] Live feed poll failed (#{consecutive_errors}): {err_msg}");
+
+                        let prev = live.snapshot().await;
+                        live.publish(LiveSnapshot {
+                            connected: false,
+                            status: "error".to_string(),
+                            message: Some(format!("Poll failed: {err_msg}")),
+                            account: account.clone(),
+                            updated_at_ms: prev.updated_at_ms,
+                            poll_interval_secs: interval_secs,
+                            friends: prev.friends,
+                        })
+                        .await;
+
+                        if consecutive_errors >= 3 {
+                            session.shutdown();
+                            let backoff_secs = (interval_secs * 2).min(120);
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
+                                _ = live.refresh_notify.notified() => {}
+                                _ = shutdown_rx.changed() => {
+                                    return;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                let wait_secs = if consecutive_errors > 0 {
+                    (interval_secs * (1u64 << consecutive_errors.min(4))).min(300)
+                } else {
+                    interval_secs
+                };
+
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => {}
+                    _ = live.refresh_notify.notified() => {}
+                    _ = shutdown_rx.changed() => {
+                        session.shutdown();
+                        return;
+                    }
+                }
+            }
+        }
+    })
+}
+
+pub fn build_router(db_path: PathBuf, live: Arc<LiveHub>) -> Router {
     let state = AppState {
         db_path: Arc::new(db_path),
+        live,
     };
 
     let api_router = Router::new()
@@ -331,6 +780,9 @@ pub fn build_router(db_path: PathBuf) -> Router {
         .route("/overlap", get(api_overlap))
         .route("/profiles", get(api_profiles))
         .route("/changes", get(api_changes))
+        .route("/live", get(api_live))
+        .route("/live/stream", get(api_live_stream))
+        .route("/live/refresh", post(api_live_refresh))
         .fallback(api_not_found);
 
     Router::new()
@@ -339,18 +791,36 @@ pub fn build_router(db_path: PathBuf) -> Router {
         .with_state(state)
 }
 
-pub async fn run_server(db_path: &Path, host: &str, port: u16, open_browser: bool) -> Result<()> {
+pub async fn run_server(config: UiConfig) -> Result<()> {
     // Ensure database file and schema are initialized up front
-    let _ = Database::open(db_path)?;
+    let _ = Database::open(&config.db_path)?;
 
-    let ip: IpAddr = host
+    let ip: IpAddr = config
+        .host
         .parse()
-        .with_context(|| format!("Invalid bind host IP address: '{host}'"))?;
-    let addr = SocketAddr::new(ip, port);
+        .with_context(|| format!("Invalid bind host IP address: '{}'", config.host))?;
+    let addr = SocketAddr::new(ip, config.port);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("Failed to bind web server on {addr}"))?;
+
+    let poll_interval_secs = config.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
+    let live = Arc::new(LiveHub::new(poll_interval_secs, config.offline));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let poller_handle = if !config.offline {
+        Some(spawn_live_poller(
+            Arc::clone(&live),
+            config.cache_dir.clone(),
+            config.db_path.clone(),
+            poll_interval_secs,
+            config.log_to_db,
+            shutdown_rx,
+        ))
+    } else {
+        None
+    };
 
     let display_host = match ip {
         IpAddr::V4(v4) if v4.is_unspecified() => "127.0.0.1".to_string(),
@@ -358,19 +828,32 @@ pub async fn run_server(db_path: &Path, host: &str, port: u16, open_browser: boo
         IpAddr::V6(v6) => format!("[{v6}]"),
         IpAddr::V4(v4) => v4.to_string(),
     };
-    let url = format!("http://{display_host}:{port}");
+    let url = format!("http://{display_host}:{}", config.port);
     println!("bside UI running at {url}");
+    if config.offline {
+        println!("Mode: offline archive only");
+    } else {
+        println!(
+            "Mode: live feed every {poll_interval_secs}s (SQLite logging: {})",
+            if config.log_to_db { "on" } else { "off" }
+        );
+    }
     println!("Press Ctrl+C to stop.");
 
-    if open_browser && let Err(err) = open::that(&url) {
+    if config.open_browser && let Err(err) = open::that(&url) {
         eprintln!("Could not open browser automatically: {err}");
     }
 
-    let app = build_router(db_path.to_path_buf());
+    let app = build_router(config.db_path.clone(), live);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Web server exited with error")?;
+
+    let _ = shutdown_tx.send(true);
+    if let Some(handle) = poller_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
 
     println!("\nbside UI stopped.");
     Ok(())
@@ -403,10 +886,11 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Method, Request};
     use chrono::Utc;
     use serde_json::Value;
     use tower::ServiceExt;
@@ -575,11 +1059,32 @@ mod tests {
         (status, json)
     }
 
+    async fn post_json(app: &Router, uri: &str) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router response");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&bytes).expect("valid json");
+        (status, json)
+    }
+
     #[tokio::test]
     async fn test_api_endpoints_return_valid_json() {
         let db_path = make_temp_db_path("all-endpoints");
         seed_sample_db(&db_path);
-        let app = build_router(db_path.clone());
+        let live = Arc::new(LiveHub::new(15, true));
+        let app = build_router(db_path.clone(), live);
 
         let (status, overview) = get_json(&app, "/api/overview?friend=&days=30").await;
         assert_eq!(status, StatusCode::OK);
@@ -633,6 +1138,193 @@ mod tests {
         let (status, not_found) = get_json(&app, "/api/does-not-exist").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(not_found["error"].as_str().is_some());
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_live_endpoints_offline_and_contract() {
+        let db_path = make_temp_db_path("live-endpoints");
+        let _ = Database::open(&db_path).expect("open db");
+        let live = Arc::new(LiveHub::new(5, true));
+        let app = build_router(db_path.clone(), Arc::clone(&live));
+
+        let (status, snap) = get_json(&app, "/api/live").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(snap["connected"], false);
+        assert_eq!(snap["status"], "offline");
+        assert_eq!(snap["message"], "Running in offline archive mode");
+        assert!(snap["account"].is_null());
+        assert!(snap["updated_at_ms"].is_null());
+        // Minimum poll interval is clamped to 10 seconds
+        assert_eq!(snap["poll_interval_secs"], 10);
+        assert_eq!(snap["friends"].as_array().unwrap().len(), 0);
+
+        let (status, refreshed) = post_json(&app, "/api/live/refresh").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(refreshed["connected"], false);
+        assert_eq!(refreshed["status"], "offline");
+        assert_eq!(refreshed["message"], "Running in offline archive mode");
+
+        // Publish a live snapshot with mixed playing/paused items and verify sorting + JSON keys
+        let mut items = vec![
+            LiveFriendItem::from(&FriendActivity {
+                timestamp: 3000,
+                playing: false,
+                user: FriendUser {
+                    uri: "spotify:user:bob".to_string(),
+                    name: "Bob".to_string(),
+                    image_url: None,
+                },
+                track: FriendTrack {
+                    uri: "spotify:track:bob1".to_string(),
+                    name: "Paused Newer".to_string(),
+                    artist: Some(NamedUri {
+                        uri: "spotify:artist:1".to_string(),
+                        name: "Artist B".to_string(),
+                    }),
+                    ..Default::default()
+                },
+            }),
+            LiveFriendItem::from(&FriendActivity {
+                timestamp: 1000,
+                playing: true,
+                user: FriendUser {
+                    uri: "spotify:user:carol".to_string(),
+                    name: "Carol".to_string(),
+                    image_url: None,
+                },
+                track: FriendTrack {
+                    uri: "spotify:track:carol1".to_string(),
+                    name: "Playing Older".to_string(),
+                    artist: Some(NamedUri {
+                        uri: "spotify:artist:2".to_string(),
+                        name: "Artist C".to_string(),
+                    }),
+                    ..Default::default()
+                },
+            }),
+            LiveFriendItem::from(&FriendActivity {
+                timestamp: 2000,
+                playing: true,
+                user: FriendUser {
+                    uri: "spotify:user:alice".to_string(),
+                    name: "Alice".to_string(),
+                    image_url: Some("https://example.com/alice.jpg".to_string()),
+                },
+                track: FriendTrack {
+                    uri: "spotify:track:alice1".to_string(),
+                    name: "Playing Newer".to_string(),
+                    album: Some(NamedUri {
+                        uri: "spotify:album:a1".to_string(),
+                        name: "Album A".to_string(),
+                    }),
+                    artists: vec![
+                        NamedUri {
+                            uri: "spotify:artist:a".to_string(),
+                            name: "Artist A".to_string(),
+                        },
+                        NamedUri {
+                            uri: "spotify:artist:f".to_string(),
+                            name: "Feat".to_string(),
+                        },
+                    ],
+                    context: Some(TrackContext {
+                        uri: "spotify:user:alice:collection".to_string(),
+                        name: "Liked Songs".to_string(),
+                        index: None,
+                        context_type: "liked_songs".to_string(),
+                        owner: Some("Alice".to_string()),
+                        is_private: true,
+                    }),
+                    item_type: "track".to_string(),
+                    duration_ms: Some(210_000),
+                    popularity: Some(82),
+                    explicit: Some(true),
+                    release_date: Some("2024-05-01".to_string()),
+                    cover_url: Some("https://example.com/cover.jpg".to_string()),
+                    ..Default::default()
+                },
+            }),
+        ];
+        sort_live_friends(&mut items);
+
+        live.publish(LiveSnapshot {
+            connected: true,
+            status: "live".to_string(),
+            message: None,
+            account: Some("tester".to_string()),
+            updated_at_ms: Some(9_999),
+            poll_interval_secs: 15,
+            friends: items,
+        })
+        .await;
+
+        let (status, live_json) = get_json(&app, "/api/live").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(live_json["connected"], true);
+        assert_eq!(live_json["status"], "live");
+        assert_eq!(live_json["account"], "tester");
+        assert_eq!(live_json["updated_at_ms"], 9_999);
+
+        let friends = live_json["friends"].as_array().unwrap();
+        assert_eq!(friends.len(), 3);
+        // Playing items first sorted by timestamp DESC, then non-playing sorted by timestamp DESC
+        assert_eq!(friends[0]["user_name"], "Alice");
+        assert_eq!(friends[1]["user_name"], "Carol");
+        assert_eq!(friends[2]["user_name"], "Bob");
+
+        // Verify all LiveFriendItem fields exist with expected values
+        let alice = &friends[0];
+        assert_eq!(alice["user_uri"], "spotify:user:alice");
+        assert_eq!(alice["user_image_url"], "https://example.com/alice.jpg");
+        assert_eq!(alice["playing"], true);
+        assert_eq!(alice["timestamp_ms"], 2000);
+        assert_eq!(alice["item_type"], "track");
+        assert_eq!(alice["track_uri"], "spotify:track:alice1");
+        assert_eq!(alice["track_name"], "Playing Newer");
+        assert_eq!(alice["all_artists"], "Artist A, Feat");
+        assert_eq!(alice["album_name"], "Album A");
+        assert_eq!(alice["cover_url"], "https://example.com/cover.jpg");
+        assert_eq!(alice["duration_ms"], 210_000);
+        assert_eq!(alice["popularity"], 82);
+        assert_eq!(alice["explicit"], true);
+        assert_eq!(alice["release_date"], "2024-05-01");
+        assert_eq!(alice["context_name"], "Liked Songs");
+        assert_eq!(alice["context_uri"], "spotify:user:alice:collection");
+        assert_eq!(alice["context_type"], "liked_songs");
+        assert_eq!(alice["context_owner"], "Alice");
+        assert_eq!(alice["context_is_private"], true);
+        assert_eq!(alice["spotify_url"], "https://open.spotify.com/track/alice1");
+
+        // Verify SSE endpoint emits initial snapshot event
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/live/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("sse response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.starts_with("text/event-stream"));
+
+        let mut body_stream = resp.into_body().into_data_stream();
+        let first_chunk = tokio::time::timeout(Duration::from_secs(2), body_stream.next())
+            .await
+            .expect("sse timeout")
+            .expect("sse chunk")
+            .expect("sse bytes");
+        let chunk_text = String::from_utf8(first_chunk.to_vec()).expect("utf8");
+        assert!(chunk_text.contains("event: snapshot"));
+        assert!(chunk_text.contains("\"status\":\"live\""));
 
         let _ = std::fs::remove_file(&db_path);
     }

@@ -202,6 +202,18 @@ enum Commands {
         /// Do not auto-open the dashboard in your default browser
         #[arg(long)]
         no_open: bool,
+
+        /// Live feed polling interval in seconds (default 15, minimum 10)
+        #[arg(long, default_value_t = 15)]
+        poll_interval: u64,
+
+        /// Disable live Spotify connection; read SQLite archive only
+        #[arg(long)]
+        offline: bool,
+
+        /// Do not write live feed listens into SQLite from the UI process
+        #[arg(long)]
+        no_log: bool,
     },
 }
 
@@ -404,7 +416,22 @@ pub async fn run() -> Result<()> {
             host,
             port,
             no_open,
-        } => crate::web::run_server(&db_path, &host, port, !no_open).await?,
+            poll_interval,
+            offline,
+            no_log,
+        } => {
+            let config = crate::web::UiConfig {
+                cache_dir,
+                db_path,
+                host,
+                port,
+                open_browser: !no_open,
+                poll_interval_secs: poll_interval,
+                offline,
+                log_to_db: !no_log,
+            };
+            crate::web::run_server(config).await?
+        }
     }
 
     Ok(())
