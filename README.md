@@ -79,6 +79,18 @@ bside overlap --days 30
 bside changes --days 30
 ```
 
+## Roadmap
+
+- [x] Single-binary Rust CLI with zero-cookie `librespot` OAuth and embedded SQLite
+- [x] Full track & podcast metadata, skip/repeat/session tracking, and profile/playlist changelog
+- [x] Hidden playlist reconstruction (`Liked Songs` & private playlists) with URL/M3U8/CSV/JSON export
+- [x] Terminal analytics: streaks, popularity extremes, 7×24 activity heatmap, and friend taste overlap
+- [ ] Prebuilt cross-platform releases (Windows, macOS, Linux) with one-line `curl` / PowerShell installers
+- [ ] Background service installer (`bside service install` via `launchd`, `systemd --user`, and Windows Task Scheduler)
+- [ ] Embedded local Web UI (`bside ui`) built with `shadcn/ui` and served directly from the single binary
+- [ ] Lightweight desktop tray app (Tauri) wrapping the local daemon and dashboard
+- [ ] Personal listening history & local Wrapped export alongside friend-circle analytics
+
 ## Notes & Limitations
 
 - **Polling frequency**: `watch` defaults to 15 seconds (minimum enforced: 10s) with exponential backoff on transient or rate-limit errors. Avoid running multiple watchers on the same account.
