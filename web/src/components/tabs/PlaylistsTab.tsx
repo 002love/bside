@@ -59,6 +59,8 @@ export interface PlaylistsTabProps {
   onFilterByUser?: (userUri: string) => void;
 }
 
+const SPOTIFY_DJ_PLAYLIST_ID = '37i9dqzf1eykqdzj48dyyq';
+
 function isLikedSongsContext(
   contextType?: string | null,
   contextUri?: string | null,
@@ -69,6 +71,29 @@ function isLikedSongsContext(
   return u === 'spotify:collection' || u.endsWith(':collection') || u.includes(':collection:');
 }
 
+function isDjContext(
+  contextType?: string | null,
+  contextUri?: string | null,
+): boolean {
+  const t = (contextType ?? '').toLowerCase();
+  if (t === 'dj') return true;
+  const u = (contextUri ?? '').toLowerCase();
+  return (
+    u === 'spotify:dj' ||
+    u.endsWith(':dj') ||
+    u.includes(':dj:') ||
+    u === `spotify:playlist:${SPOTIFY_DJ_PLAYLIST_ID}` ||
+    u.endsWith(`:playlist:${SPOTIFY_DJ_PLAYLIST_ID}`)
+  );
+}
+
+function isPersonalPrivateContext(
+  contextType?: string | null,
+  contextUri?: string | null,
+): boolean {
+  return isLikedSongsContext(contextType, contextUri) || isDjContext(contextType, contextUri);
+}
+
 function canonicalLiveContextUri(f: LiveFriendItem): string | null {
   if (!f.context_uri) return null;
   if (isLikedSongsContext(f.context_type, f.context_uri)) {
@@ -77,11 +102,18 @@ function canonicalLiveContextUri(f: LiveFriendItem): string | null {
       : f.user_uri;
     return `spotify:user:${uid}:collection`;
   }
+  if (isDjContext(f.context_type, f.context_uri)) {
+    const uid = f.user_uri.startsWith('spotify:user:')
+      ? f.user_uri.slice('spotify:user:'.length)
+      : f.user_uri;
+    return `spotify:user:${uid}:dj`;
+  }
   return f.context_uri;
 }
 
 function contextTypeLabel(type?: string | null, uri?: string | null): string {
   if (isLikedSongsContext(type, uri)) return 'Liked Songs';
+  if (isDjContext(type, uri)) return 'DJ';
   return formatContextLabel(type);
 }
 
@@ -92,6 +124,9 @@ function contextKey(c: ContextSummary): string {
 function contextDisplayName(c: ContextSummary): string {
   if (isLikedSongsContext(c.context_type, c.context_uri)) {
     return 'Liked Songs';
+  }
+  if (isDjContext(c.context_type, c.context_uri)) {
+    return 'DJ';
   }
   return (
     c.context_name ||
@@ -283,7 +318,7 @@ export function PlaylistsTab({
     const params = new URLSearchParams();
     if (
       selectedContext &&
-      isLikedSongsContext(selectedContext.context_type, selectedContext.context_uri)
+      isPersonalPrivateContext(selectedContext.context_type, selectedContext.context_uri)
     ) {
       if (selectedContext.user_uri) {
         params.set('friend', selectedContext.user_uri);
@@ -338,10 +373,12 @@ export function PlaylistsTab({
   const headerContextType =
     selectedContext?.context_type ?? activeLiveListeners[0]?.context_type ?? 'playlist';
   const headerIsLikedSongs = isLikedSongsContext(headerContextType, activeContextUri);
+  const headerIsDj = isDjContext(headerContextType, activeContextUri);
+  const headerIsPersonalPrivate = headerIsLikedSongs || headerIsDj;
   const headerIsPrivate =
-    headerIsLikedSongs ||
+    headerIsPersonalPrivate ||
     (selectedContext?.is_private ?? activeLiveListeners[0]?.context_is_private ?? false);
-  const headerSpotifyUrl = headerIsLikedSongs ? null : spotifyUriToUrl(activeContextUri);
+  const headerSpotifyUrl = headerIsPersonalPrivate ? null : spotifyUriToUrl(activeContextUri);
   const headerListeners = selectedContext ? resolveContextListeners(selectedContext) : [];
   const headerOwnerName =
     selectedContext?.context_owner ||
@@ -355,7 +392,7 @@ export function PlaylistsTab({
     activeLiveListeners[0]?.user_image_url ??
     (headerOwnerUri ? lookupAvatar(avatarMap, headerOwnerUri, headerOwnerName ?? '') : null);
   const exportBaseName =
-    headerIsLikedSongs && headerOwnerName ? `${headerTitle}-${headerOwnerName}` : headerTitle;
+    headerIsPersonalPrivate && headerOwnerName ? `${headerTitle}-${headerOwnerName}` : headerTitle;
 
   const handleCopyUrls = async () => {
     const urls = filteredTracks.map((t) => t.spotify_url).filter(Boolean).join('\n');
@@ -525,7 +562,7 @@ export function PlaylistsTab({
               const key = contextKey(ctx);
               const isSelected = !externalContextUri && key === selectedKey;
               const displayName = contextDisplayName(ctx);
-              const isLikedSongs = isLikedSongsContext(ctx.context_type, ctx.context_uri);
+              const isPersonalPrivate = isPersonalPrivateContext(ctx.context_type, ctx.context_uri);
               const ownerName = ctx.context_owner || ctx.user_name;
               const liveHere = ctx.context_uri ? liveByContext.get(ctx.context_uri) ?? [] : [];
               const isLive = liveHere.length > 0;
@@ -557,7 +594,7 @@ export function PlaylistsTab({
                       imageUrl={ctx.image_url}
                       name={displayName}
                       contextType={ctx.context_type}
-                      isPrivate={ctx.is_private || isLikedSongs}
+                      isPrivate={ctx.is_private || isPersonalPrivate}
                       size="sm"
                       className="mt-0.5"
                     />
@@ -567,7 +604,7 @@ export function PlaylistsTab({
                           <span className="truncate text-xs font-semibold text-[var(--ink-primary)]">
                             {displayName}
                           </span>
-                          {isLikedSongs && ownerName && (
+                          {isPersonalPrivate && ownerName && (
                             <span className="inline-flex shrink-0 items-center gap-1 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ink-secondary)]">
                               <UserAvatar
                                 name={ownerName}
@@ -586,7 +623,7 @@ export function PlaylistsTab({
                             <PixelDot active tone="sage" className="h-1.5 w-1.5" />
                             LIVE
                           </span>
-                        ) : ctx.is_private || isLikedSongs ? (
+                        ) : ctx.is_private || isPersonalPrivate ? (
                           <Badge
                             variant="warning"
                             className="shrink-0 gap-0.5 px-1.5 py-0 text-[9px]"
@@ -706,7 +743,7 @@ export function PlaylistsTab({
                       {headerTitle}
                     </h2>
                   )}
-                  {headerIsLikedSongs && headerOwnerName && (
+                  {headerIsPersonalPrivate && headerOwnerName && (
                     <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2 py-0.5 text-xs font-medium text-[var(--ink-secondary)]">
                       <UserAvatar
                         name={headerOwnerName}
@@ -771,9 +808,13 @@ export function PlaylistsTab({
 
             {/* Action buttons */}
             <div className="flex flex-wrap items-center gap-1.5">
-              {headerIsLikedSongs ? (
+              {headerIsPersonalPrivate ? (
                 <span
-                  title="Private Liked Songs cannot be opened directly on Spotify"
+                  title={
+                    headerIsDj
+                      ? 'Private DJ sessions cannot be opened directly on Spotify'
+                      : 'Private Liked Songs cannot be opened directly on Spotify'
+                  }
                   className="inline-flex"
                 >
                   <Button

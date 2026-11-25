@@ -29,8 +29,8 @@ use tokio::time::{Instant as TokioInstant, timeout};
 use super::auth::connect_cached;
 use super::feed::{enrich_live_entries, fetch_buddylist, normalize_legacy_friends, parse_live_feed};
 use super::models::{
-    BuddyListResponse, FriendActivity, LiveEntry, NameCache, normalize_context_uri,
-    user_id_from_uri,
+    BuddyListResponse, FriendActivity, LiveEntry, NameCache, canonical_spotify_dj_uri,
+    is_spotify_dj_context, normalize_context_uri, user_id_from_uri,
 };
 use super::profile::json_str;
 
@@ -302,7 +302,14 @@ fn parse_single_friend_json(uri: &str, json: &serde_json::Value) -> Option<LiveE
         .or_else(|| activity.and_then(|a| json_str(a, &["contextUri", "context_uri"])))
         .or_else(|| json_str(json, &["context_uri", "contextUri"]))
         .map(|s| normalize_context_uri(&s))
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|uri| {
+            if is_spotify_dj_context(Some(&uri), None) {
+                canonical_spotify_dj_uri(&user_uri)
+            } else {
+                uri
+            }
+        });
 
     let timestamp_ms = json
         .get("timestamp")
@@ -341,8 +348,12 @@ fn is_context_uri(s: &str) -> bool {
         || s.starts_with("spotify:artist:")
         || s.starts_with("spotify:show:")
         || s.starts_with("spotify:list:")
+        || s.eq_ignore_ascii_case("spotify:dj")
         || (s.starts_with("spotify:user:")
-            && (s.contains(":collection") || s.contains(":playlist:")))
+            && (s.contains(":collection")
+                || s.contains(":playlist:")
+                || s.ends_with(":dj")
+                || s.contains(":dj:")))
 }
 
 #[derive(Default)]
@@ -414,6 +425,8 @@ fn scan_protobuf_fields(bytes: &[u8], depth: usize, out: &mut ProtoScanResult) -
                             if s.starts_with("spotify:user:")
                                 && !s.contains(":collection")
                                 && !s.contains(":playlist:")
+                                && !s.ends_with(":dj")
+                                && !s.contains(":dj:")
                             {
                                 if out.user_uri.is_none() {
                                     out.user_uri = Some(s.to_string());
@@ -501,10 +514,18 @@ pub(crate) fn parse_push_payload(uri: &str, payload: &[u8]) -> Option<ParsedPush
         .timestamp_ms
         .unwrap_or_else(|| Utc::now().timestamp_millis());
 
+    let context_uri = scanned.context_uri.map(|uri| {
+        if is_spotify_dj_context(Some(&uri), None) {
+            canonical_spotify_dj_uri(&user_uri)
+        } else {
+            uri
+        }
+    });
+
     Some(ParsedPushPayload::Entries(vec![LiveEntry {
         user_uri,
         track_uri,
-        context_uri: scanned.context_uri,
+        context_uri,
         playing: true,
         timestamp_ms,
     }]))

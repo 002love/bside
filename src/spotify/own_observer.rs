@@ -16,8 +16,8 @@ use protobuf::{Message, MessageField};
 use tokio::sync::{Mutex, watch};
 
 use super::models::{
-    FriendActivity, FriendTrack, FriendUser, NamedUri, TrackContext, classify_context_type,
-    normalize_context_uri,
+    FriendActivity, FriendTrack, FriendUser, NamedUri, TrackContext, canonical_spotify_dj_uri,
+    classify_context_type, is_spotify_dj_context, normalize_context_uri,
 };
 
 const PUSHER_CONNECTIONS_URI: &str = "hm://pusher/v1/connections/";
@@ -468,8 +468,9 @@ pub(crate) fn cluster_to_activity(
             || ctx_uri.ends_with(":collection")
             || ctx_uri.contains(":collection:")
             || ctx_meta_title.is_some_and(|t| t.eq_ignore_ascii_case("liked songs"));
+        let is_dj = is_spotify_dj_context(Some(&ctx_uri), None);
 
-        if is_liked_songs {
+        if is_liked_songs || is_dj {
             let uid = user_uri
                 .strip_prefix("spotify:user:")
                 .unwrap_or(user_uri)
@@ -479,15 +480,27 @@ pub(crate) fn cluster_to_activity(
             } else {
                 user_name.trim().to_string()
             };
-            Some(TrackContext {
-                uri: format!("spotify:user:{uid}:collection"),
-                name: "Liked Songs".to_string(),
-                index: None,
-                context_type: "liked_songs".to_string(),
-                owner: Some(owner_name),
-                is_private: true,
-                image_url: None,
-            })
+            if is_liked_songs {
+                Some(TrackContext {
+                    uri: format!("spotify:user:{uid}:collection"),
+                    name: "Liked Songs".to_string(),
+                    index: None,
+                    context_type: "liked_songs".to_string(),
+                    owner: Some(owner_name),
+                    is_private: true,
+                    image_url: None,
+                })
+            } else {
+                Some(TrackContext {
+                    uri: canonical_spotify_dj_uri(user_uri),
+                    name: "DJ".to_string(),
+                    index: None,
+                    context_type: "dj".to_string(),
+                    owner: Some(owner_name),
+                    is_private: true,
+                    image_url: None,
+                })
+            }
         } else {
             let is_album_ctx = album.as_ref().is_some_and(|a| a.uri == ctx_uri);
             let ctx_name = if is_album_ctx {
@@ -695,6 +708,36 @@ mod tests {
         assert_eq!(act.context_type(), Some("liked_songs"));
         assert_eq!(act.context_name(), Some("Liked Songs"));
         assert!(act.is_private_context());
+    }
+
+    #[test]
+    fn cluster_to_activity_scopes_spotify_dj_per_user_and_private() {
+        let cluster = sample_cluster(
+            "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
+            true,
+            false,
+            1_700_000_050_000,
+            50_000,
+            "spotify:playlist:37i9dQZF1EYkqdzj48dyYq",
+        );
+
+        let act = cluster_to_activity(
+            &cluster,
+            "spotify:user:roma",
+            "Roma",
+            None,
+            None,
+            1_700_000_055_000,
+        )
+        .expect("expected DJ activity");
+
+        assert!(act.playing);
+        assert_eq!(act.context_uri(), Some("spotify:user:roma:dj"));
+        assert_eq!(act.context_type(), Some("dj"));
+        assert_eq!(act.context_name(), Some("DJ"));
+        assert_eq!(act.context_owner(), Some("Roma"));
+        assert!(act.is_private_context());
+        assert!(act.context_image_url().is_none());
     }
 
     #[test]

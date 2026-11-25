@@ -80,6 +80,8 @@ export function formatContextLabel(type: string | null | undefined): string {
   switch ((type ?? '').toLowerCase()) {
     case 'liked_songs':
       return 'Liked Songs';
+    case 'dj':
+      return 'DJ';
     case 'playlist':
       return 'Playlist';
     case 'album':

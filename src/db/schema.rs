@@ -151,6 +151,7 @@ pub(super) fn initialize_schema(conn: &Connection) -> Result<()> {
 const REPAIR_V1_KEY: &str = "repair_v1_skip_dedupe";
 const REPAIR_V2_KEY: &str = "repair_v2_end_of_track_dedupe";
 const REPAIR_V3_KEY: &str = "repair_v3_per_user_liked_songs";
+const REPAIR_V4_KEY: &str = "repair_v4_per_user_dj";
 
 fn run_one_time_repairs(conn: &Connection) -> Result<()> {
     let v2_done: bool = conn
@@ -186,6 +187,22 @@ fn run_one_time_repairs(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
             [REPAIR_V3_KEY],
+        )?;
+    }
+
+    let v4_done: bool = conn
+        .query_row(
+            "SELECT 1 FROM schema_meta WHERE key = ?1 LIMIT 1",
+            [REPAIR_V4_KEY],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !v4_done {
+        super::listens::repair_per_user_dj_conn(conn)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
+            [REPAIR_V4_KEY],
         )?;
     }
 

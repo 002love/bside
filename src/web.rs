@@ -2403,6 +2403,70 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(not_found["error"].as_str().is_some());
 
+        // Insert Spotify DJ listens for two users and verify /api/contexts and /api/rebuild isolate them
+        {
+            let db = Database::open(&db_path).unwrap();
+            let now_ms = Utc::now().timestamp_millis();
+            for (uid, uname, track_id, track_name, offset) in [
+                ("alice", "Alice", "dj_t1", "Alice DJ Song", 5_000i64),
+                ("bob", "Bob", "dj_t2", "Bob DJ Song", 4_000i64),
+            ] {
+                db.insert_listen(&FriendActivity {
+                    timestamp: now_ms - offset,
+                    playing: true,
+                    user: FriendUser {
+                        uri: format!("spotify:user:{uid}"),
+                        name: uname.to_string(),
+                        image_url: None,
+                    },
+                    track: FriendTrack {
+                        uri: format!("spotify:track:{track_id}"),
+                        name: track_name.to_string(),
+                        artist: Some(NamedUri {
+                            uri: "spotify:artist:dj_art".to_string(),
+                            name: "DJ Artist".to_string(),
+                        }),
+                        context: Some(TrackContext {
+                            uri: "spotify:playlist:37i9dQZF1EYkqdzj48dyYq".to_string(),
+                            name: "DJ".to_string(),
+                            index: None,
+                            context_type: "playlist".to_string(),
+                            owner: Some("spotify".to_string()),
+                            is_private: false,
+                            image_url: None,
+                        }),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            }
+        }
+
+        let (status, dj_contexts) = get_json(&app, "/api/contexts?private_only=true&days=30").await;
+        assert_eq!(status, StatusCode::OK);
+        let dj_arr: Vec<&serde_json::Value> = dj_contexts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["context_type"] == "dj")
+            .collect();
+        assert_eq!(dj_arr.len(), 2);
+        assert!(dj_arr.iter().all(|c| c["is_private"] == true && c["context_name"] == "DJ"));
+        assert!(dj_arr.iter().any(|c| c["context_uri"] == "spotify:user:alice:dj"));
+        assert!(dj_arr.iter().any(|c| c["context_uri"] == "spotify:user:bob:dj"));
+
+        let (status, alice_dj_rebuilt) =
+            get_json(&app, "/api/rebuild?days=30&context=spotify:user:alice:dj").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(alice_dj_rebuilt.as_array().unwrap().len(), 1);
+        assert_eq!(alice_dj_rebuilt[0]["track_name"], "Alice DJ Song");
+
+        let (status, bob_dj_rebuilt) =
+            get_json(&app, "/api/rebuild?days=30&context=spotify:user:bob:dj").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bob_dj_rebuilt.as_array().unwrap().len(), 1);
+        assert_eq!(bob_dj_rebuilt[0]["track_name"], "Bob DJ Song");
+
         let _ = std::fs::remove_file(&db_path);
     }
 

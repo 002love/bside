@@ -14,8 +14,8 @@ use super::metadata::{
 };
 use super::models::{
     BuddyListResponse, FriendActivity, FriendTrack, FriendUser, LiveEntry, NameCache, NamedUri,
-    TrackContext, classify_context_type, normalize_context_uri, playlist_id_from_uri,
-    user_id_from_uri,
+    TrackContext, canonical_spotify_dj_uri, classify_context_type, is_spotify_dj_context,
+    normalize_context_uri, playlist_id_from_uri, user_id_from_uri,
 };
 use super::{BUDDYLIST_ENDPOINT, LISTENING_ACTIVITY_ENDPOINT, LISTENING_ACTIVITY_LIMIT};
 
@@ -164,6 +164,8 @@ pub(super) fn parse_live_feed(json: &serde_json::Value) -> Result<Vec<LiveEntry>
             .map(|uri| {
                 if is_liked_songs_context(&uri, "", "") {
                     canonical_liked_songs_uri(user_uri)
+                } else if is_spotify_dj_context(Some(&uri), None) {
+                    canonical_spotify_dj_uri(user_uri)
                 } else {
                     uri
                 }
@@ -211,6 +213,13 @@ pub(super) fn normalize_legacy_friends(friends: &mut [FriendActivity]) {
                 ctx.uri = canonical_liked_songs_uri(&item.user.uri);
                 ctx.name = "Liked Songs".to_string();
                 ctx.context_type = "liked_songs".to_string();
+                ctx.owner = Some(owner_name);
+                ctx.is_private = true;
+                ctx.image_url = None;
+            } else if is_spotify_dj_context(Some(&ctx.uri), Some(&ctx.context_type)) {
+                ctx.uri = canonical_spotify_dj_uri(&item.user.uri);
+                ctx.name = "DJ".to_string();
+                ctx.context_type = "dj".to_string();
                 ctx.owner = Some(owner_name);
                 ctx.is_private = true;
                 ctx.image_url = None;
@@ -274,6 +283,16 @@ pub(super) fn materialize_live_entries(
                     name: "Liked Songs".to_string(),
                     index: None,
                     context_type: "liked_songs".to_string(),
+                    owner: Some(resolved_user_name.clone()),
+                    is_private: true,
+                    image_url: None,
+                }
+            } else if is_spotify_dj_context(Some(ctx_uri), None) {
+                TrackContext {
+                    uri: canonical_spotify_dj_uri(&entry.user_uri),
+                    name: "DJ".to_string(),
+                    index: None,
+                    context_type: "dj".to_string(),
                     owner: Some(resolved_user_name.clone()),
                     is_private: true,
                     image_url: None,
@@ -449,6 +468,7 @@ pub async fn enrich_activity(
 
     let ctx_uri = activity.track.context.as_ref().map(|c| c.uri.clone());
     if let Some(ref uri) = ctx_uri
+        && !is_spotify_dj_context(Some(uri), None)
         && let Some(pid) = playlist_id_from_uri(uri)
         && !name_cache.playlists.contains_key(&pid)
     {
@@ -468,6 +488,13 @@ pub async fn enrich_activity(
             ctx.uri = canonical_liked_songs_uri(&activity.user.uri);
             ctx.name = "Liked Songs".to_string();
             ctx.context_type = "liked_songs".to_string();
+            ctx.owner = Some(owner_name);
+            ctx.is_private = true;
+            ctx.image_url = None;
+        } else if is_spotify_dj_context(Some(&ctx.uri), Some(&ctx.context_type)) {
+            ctx.uri = canonical_spotify_dj_uri(&activity.user.uri);
+            ctx.name = "DJ".to_string();
+            ctx.context_type = "dj".to_string();
             ctx.owner = Some(owner_name);
             ctx.is_private = true;
             ctx.image_url = None;
@@ -700,6 +727,17 @@ fn parse_web_api_track(
                 name: "Liked Songs".to_string(),
                 index: None,
                 context_type: "liked_songs".to_string(),
+                owner: Some(owner_name.to_string()),
+                is_private: true,
+                image_url: None,
+            });
+        }
+        if is_spotify_dj_context(Some(&ctx_uri), Some(raw_type)) {
+            return Some(TrackContext {
+                uri: canonical_spotify_dj_uri(user_uri),
+                name: "DJ".to_string(),
+                index: None,
+                context_type: "dj".to_string(),
                 owner: Some(owner_name.to_string()),
                 is_private: true,
                 image_url: None,

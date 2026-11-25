@@ -5,7 +5,9 @@ use chrono::{Duration, Utc};
 use rusqlite::{Connection, Row, params, types::Value as SqlValue};
 use serde::Serialize;
 
-use crate::spotify::FriendActivity;
+use crate::spotify::{
+    FriendActivity, SPOTIFY_DJ_PLAYLIST_ID, canonical_spotify_dj_uri, is_spotify_dj_context,
+};
 
 use super::{Database, format_timestamp_local, spotify_uri_to_url};
 
@@ -116,7 +118,8 @@ impl Database {
         let raw_ctx_type = activity.context_type();
         let raw_ctx_name = activity.context_name();
         let is_liked_songs = is_liked_songs_context(raw_ctx_uri, raw_ctx_type, raw_ctx_name);
-        let canonical_liked_uri = if is_liked_songs {
+        let is_dj = !is_liked_songs && is_spotify_dj_context(raw_ctx_uri, raw_ctx_type);
+        let canonical_personal_uri = if is_liked_songs {
             let uid = activity
                 .user
                 .uri
@@ -124,35 +127,41 @@ impl Database {
                 .unwrap_or(&activity.user.uri)
                 .trim();
             Some(format!("spotify:user:{uid}:collection"))
+        } else if is_dj {
+            Some(canonical_spotify_dj_uri(&activity.user.uri))
         } else {
             None
         };
         let context_name = if is_liked_songs {
             Some("Liked Songs")
+        } else if is_dj {
+            Some("DJ")
         } else {
             raw_ctx_name
         };
-        let context_uri = if is_liked_songs {
-            canonical_liked_uri.as_deref()
+        let context_uri = if is_liked_songs || is_dj {
+            canonical_personal_uri.as_deref()
         } else {
             raw_ctx_uri
         };
         let context_type = if is_liked_songs {
             Some("liked_songs")
+        } else if is_dj {
+            Some("dj")
         } else {
             raw_ctx_type
         };
-        let context_owner = if is_liked_songs {
+        let context_owner = if is_liked_songs || is_dj {
             Some(activity.user.name.as_str())
         } else {
             activity.context_owner()
         };
-        let context_is_private = if is_liked_songs || activity.is_private_context() {
+        let context_is_private = if is_liked_songs || is_dj || activity.is_private_context() {
             1i64
         } else {
             0i64
         };
-        let context_image_url = if is_liked_songs {
+        let context_image_url = if is_liked_songs || is_dj {
             None
         } else {
             activity.context_image_url()
@@ -697,6 +706,31 @@ pub(super) fn repair_per_user_liked_songs_conn(conn: &Connection) -> Result<usiz
            OR LOWER(COALESCE(context_name, '')) = 'liked songs'
         ",
         [],
+    )?;
+    Ok(updated)
+}
+
+pub(super) fn repair_per_user_dj_conn(conn: &Connection) -> Result<usize> {
+    let dj_id_lc = SPOTIFY_DJ_PLAYLIST_ID.to_ascii_lowercase();
+    let exact_playlist_uri = format!("spotify:playlist:{dj_id_lc}");
+    let suffixed_playlist_uri = format!("%:playlist:{dj_id_lc}");
+    let updated = conn.execute(
+        "
+        UPDATE listens
+        SET context_uri = 'spotify:user:' || REPLACE(user_uri, 'spotify:user:', '') || ':dj',
+            context_type = 'dj',
+            context_name = 'DJ',
+            context_owner = user_name,
+            context_is_private = 1,
+            context_image_url = NULL
+        WHERE LOWER(COALESCE(context_type, '')) = 'dj'
+           OR LOWER(COALESCE(context_uri, '')) = 'spotify:dj'
+           OR LOWER(COALESCE(context_uri, '')) LIKE '%:dj'
+           OR LOWER(COALESCE(context_uri, '')) LIKE '%:dj:%'
+           OR LOWER(COALESCE(context_uri, '')) = ?1
+           OR LOWER(COALESCE(context_uri, '')) LIKE ?2
+        ",
+        params![exact_playlist_uri, suffixed_playlist_uri],
     )?;
     Ok(updated)
 }

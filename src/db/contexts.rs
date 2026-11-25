@@ -96,7 +96,7 @@ impl Database {
               AND (
                   ? = 0
                   OR l.context_is_private = 1
-                  OR LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection')
+                  OR LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection', 'dj')
               )
             GROUP BY ctx_key, l.user_uri
             ORDER BY MAX(l.played_at_ms) DESC, user_name COLLATE NOCASE ASC
@@ -130,17 +130,19 @@ impl Database {
                 CASE
                     WHEN LOWER(COALESCE(MAX(NULLIF(l.context_type, '')), '')) IN ('liked_songs', 'collection')
                     THEN 'Liked Songs'
+                    WHEN LOWER(COALESCE(MAX(NULLIF(l.context_type, '')), '')) = 'dj'
+                    THEN 'DJ'
                     ELSE COALESCE(MAX(NULLIF(l.context_name, '')), '')
                 END AS ctx_name,
                 COALESCE(MAX(NULLIF(l.context_type, '')), 'other') AS ctx_type,
                 CASE
-                    WHEN LOWER(COALESCE(MAX(NULLIF(l.context_type, '')), '')) IN ('liked_songs', 'collection')
+                    WHEN LOWER(COALESCE(MAX(NULLIF(l.context_type, '')), '')) IN ('liked_songs', 'collection', 'dj')
                     THEN MAX(l.user_name)
                     ELSE MAX(NULLIF(l.context_owner, ''))
                 END AS ctx_owner,
                 MAX(
                     CASE
-                        WHEN LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection') THEN 1
+                        WHEN LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection', 'dj') THEN 1
                         ELSE l.context_is_private
                     END
                 ) AS is_priv,
@@ -169,7 +171,7 @@ impl Database {
               AND (
                   ? = 0
                   OR l.context_is_private = 1
-                  OR LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection')
+                  OR LOWER(COALESCE(l.context_type, '')) IN ('liked_songs', 'collection', 'dj')
               )
             GROUP BY l.user_uri, COALESCE(NULLIF(l.context_uri, ''), l.context_name)
             ORDER BY total_plays DESC, last_seen_ms DESC

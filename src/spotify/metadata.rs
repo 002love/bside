@@ -15,8 +15,8 @@ use librespot_protocol::{
 use protobuf::{EnumOrUnknown, Message};
 
 use super::models::{
-    FriendTrack, LiveEntry, NameCache, NamedUri, PlaylistInfo, playlist_id_from_uri,
-    user_id_from_uri,
+    FriendTrack, LiveEntry, NameCache, NamedUri, PlaylistInfo, is_spotify_dj_context,
+    playlist_id_from_uri, user_id_from_uri,
 };
 use super::profile::json_str;
 
@@ -204,6 +204,7 @@ pub(super) async fn resolve_missing_names(
 
     let missing_playlists: BTreeSet<String> = entries
         .iter()
+        .filter(|e| !is_spotify_dj_context(e.context_uri.as_deref(), None))
         .filter_map(|e| e.context_uri.as_deref().and_then(playlist_id_from_uri))
         .filter(|id| !cache.playlists.contains_key(id))
         .collect();

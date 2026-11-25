@@ -1207,3 +1207,238 @@ fn repair_v3_migrates_legacy_shared_liked_songs_rows() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn per_user_spotify_dj_stays_separate_and_private() {
+    let (dir, db_path) = temp_db_path("per_user_spotify_dj");
+    let db = Database::open(&db_path).unwrap();
+    let now_ms = Utc::now().timestamp_millis();
+
+    // Alice listens to canonical Spotify AI DJ playlist URI marked public by upstream
+    let mut alice_dj = sample_activity(now_ms - 90_000, "spotify:track:alice_dj_only", "Alice DJ Track");
+    alice_dj.user.uri = "spotify:user:alice".to_string();
+    alice_dj.user.name = "Alice".to_string();
+    alice_dj.track.context = Some(TrackContext {
+        uri: format!("spotify:playlist:{}", crate::spotify::SPOTIFY_DJ_PLAYLIST_ID),
+        name: "DJ".to_string(),
+        index: None,
+        context_type: "playlist".to_string(),
+        owner: Some("spotify".to_string()),
+        is_private: false,
+        image_url: Some("https://i.scdn.co/image/dj_cover".to_string()),
+    });
+
+    // Bob listens to user-prefixed canonical Spotify DJ URI (plus a shared track for overlap)
+    let mut bob_dj = sample_activity(now_ms - 60_000, "spotify:track:bob_dj_only", "Bob DJ Track");
+    bob_dj.user.uri = "spotify:user:bob".to_string();
+    bob_dj.user.name = "Bob".to_string();
+    bob_dj.track.context = Some(TrackContext {
+        uri: format!(
+            "spotify:user:spotify:playlist:{}",
+            crate::spotify::SPOTIFY_DJ_PLAYLIST_ID
+        ),
+        name: "DJ".to_string(),
+        index: None,
+        context_type: "playlist".to_string(),
+        owner: Some("spotify".to_string()),
+        is_private: false,
+        image_url: Some("https://i.scdn.co/image/dj_cover".to_string()),
+    });
+
+    // A regular public playlist with "DJ" in its name must NOT be treated as Spotify DJ
+    let mut normal_dj_pl = sample_activity(now_ms - 30_000, "spotify:track:club_track", "Club Track");
+    normal_dj_pl.user.uri = "spotify:user:alice".to_string();
+    normal_dj_pl.user.name = "Alice".to_string();
+    normal_dj_pl.track.context = Some(TrackContext {
+        uri: "spotify:playlist:customuserplaylist999".to_string(),
+        name: "DJ Mix 2026".to_string(),
+        index: None,
+        context_type: "playlist".to_string(),
+        owner: Some("Alice".to_string()),
+        is_private: false,
+        image_url: None,
+    });
+
+    db.insert_listen(&alice_dj).unwrap();
+    db.insert_listen(&bob_dj).unwrap();
+    db.insert_listen(&normal_dj_pl).unwrap();
+
+    // Private contexts must contain Alice's DJ and Bob's DJ separately, and NOT the normal DJ Mix playlist
+    let priv_contexts = db.query_contexts_for_users(&[], None, true).unwrap();
+    assert_eq!(priv_contexts.len(), 2);
+
+    let alice_ctx = priv_contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:alice")
+        .expect("Alice DJ context missing");
+    assert_eq!(alice_ctx.context_uri, "spotify:user:alice:dj");
+    assert_eq!(alice_ctx.context_name, "DJ");
+    assert_eq!(alice_ctx.context_type, "dj");
+    assert_eq!(alice_ctx.context_owner.as_deref(), Some("Alice"));
+    assert!(alice_ctx.is_private);
+    assert_eq!(alice_ctx.unique_tracks, 1);
+    assert_eq!(alice_ctx.listeners.len(), 1);
+    assert_eq!(alice_ctx.listeners[0].user_uri, "spotify:user:alice");
+
+    let bob_ctx = priv_contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:bob")
+        .expect("Bob DJ context missing");
+    assert_eq!(bob_ctx.context_uri, "spotify:user:bob:dj");
+    assert_eq!(bob_ctx.context_name, "DJ");
+    assert_eq!(bob_ctx.context_type, "dj");
+    assert_eq!(bob_ctx.context_owner.as_deref(), Some("Bob"));
+    assert!(bob_ctx.is_private);
+    assert_eq!(bob_ctx.unique_tracks, 1);
+    assert_eq!(bob_ctx.listeners.len(), 1);
+    assert_eq!(bob_ctx.listeners[0].user_uri, "spotify:user:bob");
+
+    // Rebuilding each user's DJ without a user filter must return ONLY that user's tracks
+    let alice_tracks = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:alice:dj")
+        .unwrap();
+    assert_eq!(alice_tracks.len(), 1);
+    assert_eq!(alice_tracks[0].track_uri, "spotify:track:alice_dj_only");
+
+    let bob_tracks = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:bob:dj")
+        .unwrap();
+    assert_eq!(bob_tracks.len(), 1);
+    assert_eq!(bob_tracks[0].track_uri, "spotify:track:bob_dj_only");
+
+    // Normal playlist named "DJ Mix 2026" stays public and unmodified
+    let all_contexts = db.query_contexts_for_users(&[], None, false).unwrap();
+    let normal_ctx = all_contexts
+        .iter()
+        .find(|c| c.context_uri == "spotify:playlist:customuserplaylist999")
+        .expect("Normal DJ Mix playlist missing");
+    assert!(!normal_ctx.is_private);
+    assert_eq!(normal_ctx.context_type, "playlist");
+    assert_eq!(normal_ctx.context_name, "DJ Mix 2026");
+
+    // Stats context_breakdown includes "dj" and overlap still compares artists across users
+    let stats = db.query_stats_for_users(&[], Some(7)).unwrap();
+    assert!(stats.context_breakdown.iter().any(|(ct, cnt)| ct == "dj" && *cnt == 2));
+    let overlap = db.query_overlap(Some(7), &[]).unwrap();
+    assert_eq!(overlap.friend_pairs.len(), 1);
+    assert_eq!(overlap.shared_artists.len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn repair_v4_migrates_legacy_shared_dj_rows_idempotently() {
+    let (dir, db_path) = temp_db_path("repair_v4_dj");
+    {
+        let db = Database::open(&db_path).unwrap();
+        db.conn
+            .execute(
+                "DELETE FROM schema_meta WHERE key = 'repair_v4_per_user_dj'",
+                [],
+            )
+            .unwrap();
+
+        let now_ms = Utc::now().timestamp_millis();
+        let dj_uri = format!("spotify:playlist:{}", crate::spotify::SPOTIFY_DJ_PLAYLIST_ID);
+        let dj_user_uri = format!(
+            "spotify:user:spotify:playlist:{}",
+            crate::spotify::SPOTIFY_DJ_PLAYLIST_ID
+        );
+        db.conn
+            .execute(
+                "
+                INSERT INTO listens (
+                    played_at_ms, logged_at_ms, user_uri, user_name,
+                    track_uri, track_name, artist_name,
+                    context_name, context_uri, context_type, context_owner, context_is_private, context_image_url
+                ) VALUES
+                    (?1, ?1, 'spotify:user:alice', 'Alice', 'spotify:track:dj_a', 'Alice DJ', 'Artist A',
+                     'DJ', ?4, 'playlist', 'spotify', 0, 'https://i.scdn.co/image/dj'),
+                    (?2, ?2, 'spotify:user:bob', 'Bob', 'spotify:track:dj_b', 'Bob DJ', 'Artist B',
+                     'DJ', ?5, 'playlist', 'spotify', 0, 'https://i.scdn.co/image/dj'),
+                    (?3, ?3, 'spotify:user:alice', 'Alice', 'spotify:track:normal_pl', 'Normal Track', 'Artist C',
+                     'DJ', 'spotify:playlist:ordinary123', 'playlist', 'Alice', 0, 'https://i.scdn.co/image/ordinary')
+                ",
+                params![now_ms - 90_000, now_ms - 60_000, now_ms - 30_000, dj_uri, dj_user_uri],
+            )
+            .unwrap();
+    }
+
+    // Re-opening runs repair_v4_per_user_dj automatically
+    let db = Database::open(&db_path).unwrap();
+
+    let marker: String = db
+        .conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'repair_v4_per_user_dj'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker, "1");
+
+    let priv_contexts = db.query_contexts_for_users(&[], None, true).unwrap();
+    assert_eq!(priv_contexts.len(), 2);
+
+    let alice_ctx = priv_contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:alice")
+        .unwrap();
+    assert_eq!(alice_ctx.context_uri, "spotify:user:alice:dj");
+    assert_eq!(alice_ctx.context_name, "DJ");
+    assert_eq!(alice_ctx.context_type, "dj");
+    assert_eq!(alice_ctx.context_owner.as_deref(), Some("Alice"));
+    assert!(alice_ctx.is_private);
+
+    let bob_ctx = priv_contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:bob")
+        .unwrap();
+    assert_eq!(bob_ctx.context_uri, "spotify:user:bob:dj");
+    assert_eq!(bob_ctx.context_name, "DJ");
+    assert_eq!(bob_ctx.context_type, "dj");
+    assert_eq!(bob_ctx.context_owner.as_deref(), Some("Bob"));
+    assert!(bob_ctx.is_private);
+
+    // Verify context_image_url was cleared on migrated DJ rows and untouched on ordinary playlist
+    let dj_img: Option<String> = db
+        .conn
+        .query_row(
+            "SELECT context_image_url FROM listens WHERE track_uri = 'spotify:track:dj_a'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(dj_img.is_none());
+
+    let (ord_uri, ord_priv, ord_img): (String, i64, Option<String>) = db
+        .conn
+        .query_row(
+            "SELECT context_uri, context_is_private, context_image_url FROM listens WHERE track_uri = 'spotify:track:normal_pl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(ord_uri, "spotify:playlist:ordinary123");
+    assert_eq!(ord_priv, 0);
+    assert_eq!(ord_img.as_deref(), Some("https://i.scdn.co/image/ordinary"));
+
+    // Running repair again is idempotent
+    super::listens::repair_per_user_dj_conn(&db.conn).unwrap();
+    let priv_contexts_after = db.query_contexts_for_users(&[], None, true).unwrap();
+    assert_eq!(priv_contexts_after.len(), 2);
+
+    let alice_rebuilt = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:alice:dj")
+        .unwrap();
+    assert_eq!(alice_rebuilt.len(), 1);
+    assert_eq!(alice_rebuilt[0].track_uri, "spotify:track:dj_a");
+
+    let bob_rebuilt = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:bob:dj")
+        .unwrap();
+    assert_eq!(bob_rebuilt.len(), 1);
+    assert_eq!(bob_rebuilt[0].track_uri, "spotify:track:dj_b");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

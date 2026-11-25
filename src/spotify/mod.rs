@@ -23,7 +23,8 @@ pub use metadata::format_proto_date;
 #[allow(unused_imports)]
 pub use models::{
     BuddyListResponse, FriendActivity, FriendTrack, FriendUser, NameCache, NamedUri, PlaylistInfo,
-    PublicPlaylist, TrackContext, UserProfileSnapshot, classify_context_type,
+    PublicPlaylist, SPOTIFY_DJ_PLAYLIST_ID, TrackContext, UserProfileSnapshot,
+    canonical_spotify_dj_uri, classify_context_type, is_spotify_dj_context,
 };
 pub use own_observer::OwnPlaybackObserver;
 pub use profile::fetch_user_profile;
@@ -58,6 +59,18 @@ mod tests {
         );
         assert_eq!(
             classify_context_type("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "Today's Top Hits"),
+            "playlist"
+        );
+        assert_eq!(
+            classify_context_type("spotify:playlist:37i9dQZF1EYkqdzj48dyYq", "DJ"),
+            "dj"
+        );
+        assert_eq!(
+            classify_context_type("spotify:user:alice:dj", ""),
+            "dj"
+        );
+        assert_eq!(
+            classify_context_type("spotify:playlist:usercustom123", "DJ"),
             "playlist"
         );
         assert_eq!(
@@ -825,5 +838,137 @@ mod tests {
         assert!(rx.recv().await.is_none());
         handle.await.unwrap();
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn spotify_dj_feed_cache_and_push_are_per_user_and_private() {
+        let dj_uri = format!("spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}");
+        let feed_json = serde_json::json!({
+            "entities": [
+                {
+                    "userEntity": {
+                        "uri": "spotify:user:alice",
+                        "activity": {
+                            "entityUri": "spotify:track:1111111111111111111111",
+                            "contextUri": dj_uri,
+                            "timestamp": "2026-11-24T20:05:00Z",
+                            "isPlaying": true
+                        }
+                    }
+                },
+                {
+                    "followEntity": {
+                        "uri": "spotify:user:bob",
+                        "activity": {
+                            "entityUri": "spotify:track:2222222222222222222222",
+                            "contextUri": format!("spotify:user:spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}"),
+                            "timestamp": "2026-11-24T20:00:00Z",
+                            "isPlaying": true
+                        }
+                    }
+                }
+            ]
+        });
+
+        let entries = parse_live_feed(&feed_json).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].context_uri.as_deref(), Some("spotify:user:alice:dj"));
+        assert_eq!(entries[1].context_uri.as_deref(), Some("spotify:user:bob:dj"));
+
+        // Even if NameCache somehow had a public PlaylistInfo for SPOTIFY_DJ_PLAYLIST_ID,
+        // materializing a raw DJ URI must still yield per-user private DJ contexts.
+        let mut cache = NameCache::default();
+        cache
+            .profiles
+            .insert("alice".to_string(), (Some("Alice".to_string()), None));
+        cache
+            .profiles
+            .insert("bob".to_string(), (Some("Bob".to_string()), None));
+        cache.playlists.insert(
+            SPOTIFY_DJ_PLAYLIST_ID.to_string(),
+            PlaylistInfo {
+                name: "DJ".to_string(),
+                owner: Some("spotify".to_string()),
+                is_private: false,
+                total_tracks: Some(50),
+                image_url: Some("https://i.scdn.co/image/dj".to_string()),
+            },
+        );
+
+        let activities = materialize_live_entries(
+            vec![
+                LiveEntry {
+                    user_uri: "spotify:user:alice".to_string(),
+                    track_uri: "spotify:track:1111111111111111111111".to_string(),
+                    context_uri: Some(format!("spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}")),
+                    playing: true,
+                    timestamp_ms: 1_700_000_001_000,
+                },
+                LiveEntry {
+                    user_uri: "spotify:user:bob".to_string(),
+                    track_uri: "spotify:track:2222222222222222222222".to_string(),
+                    context_uri: Some(format!("spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}")),
+                    playing: true,
+                    timestamp_ms: 1_700_000_002_000,
+                },
+            ],
+            &cache,
+        );
+
+        assert_eq!(activities[0].context_uri(), Some("spotify:user:alice:dj"));
+        assert_eq!(activities[0].context_type(), Some("dj"));
+        assert_eq!(activities[0].context_name(), Some("DJ"));
+        assert_eq!(activities[0].context_owner(), Some("Alice"));
+        assert!(activities[0].is_private_context());
+        assert!(activities[0].context_image_url().is_none());
+
+        assert_eq!(activities[1].context_uri(), Some("spotify:user:bob:dj"));
+        assert_eq!(activities[1].context_type(), Some("dj"));
+        assert_eq!(activities[1].context_name(), Some("DJ"));
+        assert_eq!(activities[1].context_owner(), Some("Bob"));
+        assert!(activities[1].is_private_context());
+        assert!(activities[1].context_image_url().is_none());
+
+        // Realtime single-friend JSON push with raw DJ URI
+        let push_json = serde_json::json!({
+            "trackUri": "spotify:track:3333333333333333333333",
+            "contextUri": format!("spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}"),
+            "timestamp": "2026-11-24T20:15:00Z",
+            "is_playing": true
+        })
+        .to_string();
+        match parse_push_payload("hm://presence2/user/carol", push_json.as_bytes()) {
+            Some(ParsedPushPayload::Entries(push_entries)) => {
+                assert_eq!(push_entries.len(), 1);
+                assert_eq!(
+                    push_entries[0].context_uri.as_deref(),
+                    Some("spotify:user:carol:dj")
+                );
+            }
+            other => panic!("expected Entries for DJ push, got {other:?}"),
+        }
+
+        // Web API currently-playing with DJ context
+        let cp_json = serde_json::json!({
+            "timestamp": 1_700_000_050_000i64,
+            "progress_ms": 10_000i64,
+            "is_playing": true,
+            "context": {
+                "type": "playlist",
+                "uri": format!("spotify:playlist:{SPOTIFY_DJ_PLAYLIST_ID}")
+            },
+            "item": {
+                "uri": "spotify:track:t_dj",
+                "name": "DJ Track",
+                "artists": [{ "uri": "spotify:artist:a1", "name": "Artist 1" }]
+            }
+        });
+        let cp = super::feed::parse_own_currently_playing(&cp_json, "me123", "Me", None).unwrap();
+        assert_eq!(cp.context_uri(), Some("spotify:user:me123:dj"));
+        assert_eq!(cp.context_type(), Some("dj"));
+        assert_eq!(cp.context_name(), Some("DJ"));
+        assert_eq!(cp.context_owner(), Some("Me"));
+        assert!(cp.is_private_context());
+        assert!(cp.context_image_url().is_none());
     }
 }

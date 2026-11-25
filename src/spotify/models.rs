@@ -336,9 +336,42 @@ impl FriendActivity {
     }
 }
 
+pub const SPOTIFY_DJ_PLAYLIST_ID: &str = "37i9dQZF1EYkqdzj48dyYq";
+
+pub fn is_spotify_dj_context(uri: Option<&str>, context_type: Option<&str>) -> bool {
+    if let Some(u) = uri {
+        let u_lc = u.trim().to_ascii_lowercase();
+        let dj_id_lc = SPOTIFY_DJ_PLAYLIST_ID.to_ascii_lowercase();
+        if u_lc == "spotify:dj"
+            || u_lc.ends_with(":dj")
+            || u_lc.contains(":dj:")
+            || u_lc == format!("spotify:playlist:{dj_id_lc}")
+            || u_lc.ends_with(&format!(":playlist:{dj_id_lc}"))
+        {
+            return true;
+        }
+    }
+    if let Some(t) = context_type
+        && t.trim().eq_ignore_ascii_case("dj")
+    {
+        return true;
+    }
+    false
+}
+
+pub fn canonical_spotify_dj_uri(user_uri: &str) -> String {
+    let uid = user_uri
+        .strip_prefix("spotify:user:")
+        .unwrap_or(user_uri)
+        .trim();
+    format!("spotify:user:{uid}:dj")
+}
+
 pub fn classify_context_type(uri: &str, name: &str) -> &'static str {
     if uri.contains(":collection") || name == "Liked Songs" {
         "liked_songs"
+    } else if is_spotify_dj_context(Some(uri), None) {
+        "dj"
     } else if uri.contains(":playlist:") {
         "playlist"
     } else if uri.contains(":album:") {
