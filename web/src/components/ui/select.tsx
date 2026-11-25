@@ -30,6 +30,7 @@ export function SelectTrigger({
 export function SelectContent({
   className,
   children,
+  collisionPadding = 12,
   ...props
 }: ComponentPropsWithoutRef<typeof RadixSelect.Content>) {
   return (
@@ -37,13 +38,16 @@ export function SelectContent({
       <RadixSelect.Content
         position="popper"
         sideOffset={6}
+        collisionPadding={collisionPadding}
         className={cn(
-          'z-50 min-w-[12rem] overflow-hidden bside-popover p-1',
+          'z-50 min-w-[12rem] max-w-[calc(100vw-1.5rem)] overflow-hidden bside-popover p-1',
           className,
         )}
         {...props}
       >
-        <RadixSelect.Viewport className="max-h-72">{children}</RadixSelect.Viewport>
+        <RadixSelect.Viewport className="max-h-[min(18rem,var(--radix-select-content-available-height))]">
+          {children}
+        </RadixSelect.Viewport>
       </RadixSelect.Content>
     </RadixSelect.Portal>
   );

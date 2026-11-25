@@ -9,14 +9,16 @@ export const TooltipTrigger = RadixTooltip.Trigger;
 export function TooltipContent({
   className,
   sideOffset = 6,
+  collisionPadding = 12,
   ...props
 }: ComponentPropsWithoutRef<typeof RadixTooltip.Content>) {
   return (
     <RadixTooltip.Portal>
       <RadixTooltip.Content
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          'z-50 max-w-xs bside-popover px-3 py-2 text-xs leading-relaxed text-[var(--ink-primary)]',
+          'z-50 max-w-[min(20rem,calc(100vw-1.5rem))] break-words bside-popover px-3 py-2 text-xs leading-relaxed text-[var(--ink-primary)]',
           className,
         )}
         {...props}
