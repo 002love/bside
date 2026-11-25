@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "bside-desktop"
+version = "0.2.0"
+edition = "2021"
+description = "Desktop application for bside — local-first Spotify listening & friend-circle analytics"
+license = "MIT"
+repository = "https://github.com/002love/bside"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+bside = { path = ".." }
+open = "5"
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+url = "2"
