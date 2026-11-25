@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "identifier": "io.github.002love.bside",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../web run build",
+    "beforeBuildCommand": "npm --prefix web run build",
     "frontendDist": "../web/dist"
   },
   "app": {

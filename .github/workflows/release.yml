@@ -224,7 +224,8 @@ jobs:
           key: desktop-${{ matrix.target }}
 
       - name: Install Tauri CLI
-        uses: taiki-e/install-action@cargo-tauri
+        shell: bash
+        run: npm install -g @tauri-apps/cli@^2
 
       - name: Sync release version into Tauri metadata
         shell: bash
@@ -253,7 +254,7 @@ jobs:
         working-directory: src-tauri
         env:
           NO_STRIP: "true"
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: tauri build --target ${{ matrix.target }}
 
       - name: Collect desktop release assets
         shell: bash
