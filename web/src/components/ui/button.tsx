@@ -3,17 +3,18 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonStyles = cva(
-  'inline-flex items-center justify-center gap-1.5 rounded-none font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#89b471] disabled:pointer-events-none disabled:opacity-45 cursor-pointer',
+  'inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-control)] font-mono text-[11px] font-semibold uppercase tracking-wider transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]/70 disabled:pointer-events-none disabled:opacity-45 cursor-pointer select-none',
   {
     variants: {
       variant: {
         primary:
-          'border border-[#efeee8] bg-[#efeee8] text-[#111110] shadow-moss-interactive hover:bg-[#ffffff]',
+          'border border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--ink-on-accent)] bside-btn-layered hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]',
         secondary:
-          'border border-[#2b2b27] bg-[#181816] text-[#efeee8] hover:border-[#45453e] hover:bg-[#20201d]',
-        ghost: 'text-[#8d8c84] hover:bg-[#20201d] hover:text-[#efeee8]',
+          'border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-primary)] shadow-edge hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] active:translate-y-[1px]',
+        ghost:
+          'text-[var(--ink-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
         outline:
-          'border border-[#45453e] bg-transparent text-[#efeee8] hover:border-[#89b471] hover:bg-[#20201d]',
+          'border border-[var(--border-strong)] bg-transparent text-[var(--ink-primary)] hover:border-[var(--accent-primary)] hover:bg-[var(--bg-hover)]',
       },
       size: {
         sm: 'h-7 px-2.5 text-[11px]',

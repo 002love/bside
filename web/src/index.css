@@ -1,74 +1,362 @@
 @import "tailwindcss";
 
 @layer base {
-  :root {
+  /* =========================================================================
+     Theme 1: Spotify Dark (Default) — Authentic Spotify dark surfaces with
+     signature two-layer tactile cards & buttons
+     ========================================================================= */
+  :root,
+  [data-theme="spotify"] {
     color-scheme: dark;
+
+    /* Surfaces */
+    --bg-canvas: #121212;
+    --bg-panel: #181818;
+    --bg-inset: #141414;
+    --bg-elevated: #242424;
+    --bg-hover: #282828;
+    --bg-popover: #282828;
+
+    /* Borders */
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --border-accent: rgba(29, 185, 84, 0.55);
+    --border-active: rgba(255, 255, 255, 0.22);
+
+    /* Ink */
+    --ink-primary: #ffffff;
+    --ink-secondary: #b3b3b3;
+    --ink-muted: #a7a7a7;
+    --ink-on-accent: #000000;
+
+    /* Accents */
+    --accent-primary: #1DB954;
+    --accent-hover: #1ED760;
+    --accent-muted: #169c46;
+    --accent-soft: rgba(29, 185, 84, 0.14);
+
+    /* Semantic status */
+    --danger: #f15e6c;
+    --danger-soft: rgba(241, 94, 108, 0.15);
+    --warning: #ffa42b;
+    --warning-soft: rgba(255, 164, 43, 0.15);
+
+    /* Legacy aliases (backwards compatibility) */
+    --accent-moss: #169c46;
+    --accent-sage: #1DB954;
+    --accent-amber: #ffa42b;
+    --accent-rust: #f15e6c;
+
+    /* Radii */
+    --radius-card: 12px;
+    --radius-control: 8px;
+    --radius-pill: 9999px;
+    --radius-avatar: 9999px;
+
+    /* Typography */
+    --font-body: 'Plus Jakarta Sans', Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-heading: 'Plus Jakarta Sans', Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Charts */
+    --chart-1: #1DB954;
+    --chart-2: #539bf5;
+    --chart-grid: rgba(255, 255, 255, 0.07);
+    --chart-axis: #a7a7a7;
+    --chart-tooltip-bg: #282828;
+    --chart-tooltip-border: rgba(255, 255, 255, 0.15);
+
+    /* 5-level Heatmap Scale */
+    --heat-0: #1f1f1f;
+    --heat-1: #123c22;
+    --heat-2: #166534;
+    --heat-3: #1aa34a;
+    --heat-4: #1ED760;
+
+    /* Two-layer tactile elevation */
+    --layer-shadow-card: 3px 3px 0px rgba(29, 185, 84, 0.22), 0 8px 24px rgba(0, 0, 0, 0.42);
+    --layer-shadow-card-hover: 5px 5px 0px rgba(29, 185, 84, 0.38), 0 12px 28px rgba(0, 0, 0, 0.52);
+    --layer-shadow-btn: 3px 3px 0px #0f5f2b;
+    --layer-shadow-btn-hover: 4px 4px 0px #0f5f2b;
+    --layer-shadow-btn-active: 1px 1px 0px #0f5f2b;
+    --layer-shadow-btn-secondary: 3px 3px 0px rgba(255, 255, 255, 0.08);
+    --layer-shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.65), 0 4px 12px rgba(0, 0, 0, 0.45);
+
+    /* Canvas texture */
+    --canvas-pattern: radial-gradient(ellipse 80% 45% at 20% 0%, rgba(29, 185, 84, 0.07) 0%, transparent 65%);
+    --canvas-pattern-size: 100% 100%;
+    --scrollbar-radius: 9999px;
+  }
+
+  /* =========================================================================
+     Theme 2: Classic B-Side — Dark editorial monospace with moss offset plates
+     ========================================================================= */
+  [data-theme="classic"] {
+    color-scheme: dark;
+
+    /* Surfaces */
     --bg-canvas: #111110;
     --bg-panel: #181816;
     --bg-inset: #141412;
+    --bg-elevated: #20201d;
     --bg-hover: #20201d;
+    --bg-popover: #181816;
+
+    /* Borders */
     --border-subtle: #2b2b27;
+    --border-strong: #45453e;
+    --border-accent: #89b471;
     --border-active: #45453e;
+
+    /* Ink */
     --ink-primary: #efeee8;
+    --ink-secondary: #c7c6bc;
     --ink-muted: #8d8c84;
+    --ink-on-accent: #111110;
+
+    /* Accents */
+    --accent-primary: #89b471;
+    --accent-hover: #a1cb89;
+    --accent-muted: #557445;
+    --accent-soft: rgba(85, 116, 69, 0.22);
+
+    /* Semantic status */
+    --danger: #e06c60;
+    --danger-soft: rgba(184, 93, 79, 0.18);
+    --warning: #d4a259;
+    --warning-soft: rgba(196, 138, 71, 0.18);
+
+    /* Legacy aliases */
     --accent-moss: #557445;
     --accent-sage: #89b471;
     --accent-amber: #c48a47;
     --accent-rust: #b85d4f;
+
+    /* Radii */
+    --radius-card: 0px;
+    --radius-control: 0px;
+    --radius-pill: 0px;
+    --radius-avatar: 2px;
+
+    /* Typography */
+    --font-body: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-heading: 'Barlow Condensed', system-ui, -apple-system, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Charts */
+    --chart-1: #89b471;
+    --chart-2: #d4a259;
+    --chart-grid: #2b2b27;
+    --chart-axis: #8d8c84;
+    --chart-tooltip-bg: #181816;
+    --chart-tooltip-border: #45453e;
+
+    /* 5-level Heatmap Scale */
+    --heat-0: #181816;
+    --heat-1: #2a3723;
+    --heat-2: #415935;
+    --heat-3: #557445;
+    --heat-4: #89b471;
+
+    /* Two-layer tactile elevation */
+    --layer-shadow-card: 4px 4px 0px #2b2b27;
+    --layer-shadow-card-hover: 5px 5px 0px #557445;
+    --layer-shadow-btn: 4px 4px 0px #557445;
+    --layer-shadow-btn-hover: 5px 5px 0px #557445;
+    --layer-shadow-btn-active: 1px 1px 0px #557445;
+    --layer-shadow-btn-secondary: 3px 3px 0px #2b2b27;
+    --layer-shadow-popover: 4px 4px 0px #2b2b27;
+
+    /* Canvas texture */
+    --canvas-pattern: radial-gradient(rgba(239, 238, 232, 0.055) 1px, transparent 1px);
+    --canvas-pattern-size: 16px 16px;
+    --scrollbar-radius: 0px;
   }
 
   * {
-    border-color: #2b2b27;
+    border-color: var(--border-subtle);
   }
 
   html,
   body {
-    background-color: #111110;
-    color: #efeee8;
-    font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    font-family: var(--font-body);
+    transition: background-color 180ms ease, color 180ms ease;
+  }
+
+  [data-theme="classic"] body {
     font-feature-settings: "zero" 1;
   }
 }
 
-/* Typography utilities */
+/* =========================================================================
+   Typography Utilities
+   ========================================================================= */
 .font-display {
-  font-family: 'Barlow Condensed', system-ui, -apple-system, sans-serif;
+  font-family: var(--font-heading);
   letter-spacing: -0.02em;
 }
 
+.font-body {
+  font-family: var(--font-body);
+}
+
 .font-mono {
-  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
-/* Subtle dot-grid editorial texture */
+/* Canvas background texture (ambient emerald sheen in Spotify, dot grid in Classic) */
 .bg-pixel-grid {
-  background-image: radial-gradient(rgba(239, 238, 232, 0.055) 1px, transparent 1px);
-  background-size: 16px 16px;
+  background-image: var(--canvas-pattern);
+  background-size: var(--canvas-pattern-size);
 }
 
-/* Signature neo-brutalist moss & edge offset shadows */
+/* =========================================================================
+   Two-Layer Tactile Card, Button & Popover Surfaces
+   ========================================================================= */
+.bside-card {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--layer-shadow-card);
+  transition:
+    transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.bside-card-interactive {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--layer-shadow-card);
+  transition:
+    transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 150ms ease,
+    background-color 150ms ease;
+}
+
+.bside-card-interactive:hover {
+  transform: translate(-1px, -1px);
+  border-color: var(--border-strong);
+  box-shadow: var(--layer-shadow-card-hover);
+}
+
+.bside-card-interactive:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--layer-shadow-card);
+}
+
+.bside-btn-layered {
+  box-shadow: var(--layer-shadow-btn);
+  transition:
+    transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.bside-btn-layered:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--layer-shadow-btn-hover);
+}
+
+.bside-btn-layered:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: var(--layer-shadow-btn-active);
+}
+
+.bside-popover {
+  background-color: var(--bg-popover);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--layer-shadow-popover);
+  color: var(--ink-primary);
+  animation: bsidePopoverIn 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Backwards-compatible neo-brutalist shadow classes mapped to active theme */
 .shadow-moss {
-  box-shadow: 4px 4px 0px #557445;
-  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1), box-shadow 120ms cubic-bezier(0.2, 0, 0, 1), border-color 120ms ease;
+  box-shadow: var(--layer-shadow-btn);
+  transition:
+    transform 120ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 120ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 120ms ease;
 }
 
 .shadow-moss-interactive {
-  box-shadow: 4px 4px 0px #557445;
-  transition: transform 110ms cubic-bezier(0.2, 0, 0, 1), box-shadow 110ms cubic-bezier(0.2, 0, 0, 1), background-color 120ms ease;
+  box-shadow: var(--layer-shadow-btn);
+  transition:
+    transform 110ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 110ms cubic-bezier(0.2, 0, 0, 1),
+    background-color 120ms ease;
 }
 
 .shadow-moss-interactive:hover:not(:disabled) {
   transform: translate(-1px, -1px);
-  box-shadow: 5px 5px 0px #557445;
+  box-shadow: var(--layer-shadow-btn-hover);
 }
 
 .shadow-moss-interactive:active:not(:disabled) {
-  transform: translate(3px, 3px);
-  box-shadow: 1px 1px 0px #557445;
+  transform: translate(2px, 2px);
+  box-shadow: var(--layer-shadow-btn-active);
 }
 
 .shadow-edge {
-  box-shadow: 3px 3px 0px #2b2b27;
+  box-shadow: var(--layer-shadow-btn-secondary);
+}
+
+/* =========================================================================
+   Tasteful Animations
+   ========================================================================= */
+@keyframes bsideFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: bsideFadeUp 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes bsidePopoverIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-popover-in {
+  animation: bsidePopoverIn 150ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes bsidePulseRing {
+  0% {
+    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(29, 185, 84, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0);
+  }
+}
+
+.animate-live-dot {
+  animation: bsidePulseRing 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 /* Vinyl spin animation */
@@ -99,7 +387,7 @@
   animation: pixel-blink 1.4s steps(2, start) infinite;
 }
 
-/* Stepped pixel equalizer column animations */
+/* Equalizer column animations */
 @keyframes pixel-eq-1 {
   0% { height: 25%; }
   25% { height: 75%; }
@@ -148,21 +436,49 @@
   animation: pixel-eq-4 0.84s steps(4, end) infinite;
 }
 
-/* Sharp dark scrollbars (0px radius) */
+[data-theme="spotify"] .animate-pixel-eq-1 {
+  animation: pixel-eq-1 0.85s ease-in-out infinite;
+}
+
+[data-theme="spotify"] .animate-pixel-eq-2 {
+  animation: pixel-eq-2 0.72s ease-in-out infinite;
+}
+
+[data-theme="spotify"] .animate-pixel-eq-3 {
+  animation: pixel-eq-3 0.96s ease-in-out infinite;
+}
+
+[data-theme="spotify"] .animate-pixel-eq-4 {
+  animation: pixel-eq-4 0.78s ease-in-out infinite;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Theme-aware scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #111110;
+  background: var(--bg-canvas);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2b2b27;
-  border-radius: 0px;
+  background: var(--border-strong);
+  border-radius: var(--scrollbar-radius);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #45453e;
+  background: var(--ink-muted);
 }

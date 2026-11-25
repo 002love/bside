@@ -4,23 +4,30 @@ import { cn } from '@/lib/utils';
 export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElement>) {
   return (
     <div className="relative w-full overflow-x-auto">
-      <table className={cn('w-full caption-bottom font-mono text-xs', className)} {...props} />
+      <table className={cn('w-full caption-bottom text-xs', className)} {...props} />
     </div>
   );
 }
 
 export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={cn('border-b border-[#2b2b27] bg-[#141412]', className)} {...props} />;
+  return (
+    <thead
+      className={cn('border-b border-[var(--border-subtle)] bg-[var(--bg-inset)]', className)}
+      {...props}
+    />
+  );
 }
 
 export function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <tbody className={cn('divide-y divide-[#2b2b27]/80', className)} {...props} />;
+  return (
+    <tbody className={cn('divide-y divide-[var(--border-subtle)]', className)} {...props} />
+  );
 }
 
 export function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowElement>) {
   return (
     <tr
-      className={cn('transition-colors hover:bg-[#20201d]', className)}
+      className={cn('transition-colors hover:bg-[var(--bg-hover)]', className)}
       {...props}
     />
   );
@@ -30,7 +37,7 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
   return (
     <th
       className={cn(
-        'h-9 px-3 text-left align-middle font-mono text-[10px] font-semibold uppercase tracking-widest text-[#8d8c84]',
+        'h-9 px-3 text-left align-middle font-mono text-[10px] font-semibold uppercase tracking-widest text-[var(--ink-muted)]',
         className,
       )}
       {...props}
@@ -39,5 +46,5 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
 }
 
 export function TableCell({ className, ...props }: TdHTMLAttributes<HTMLTableCellElement>) {
-  return <td className={cn('px-3 py-2.5 align-middle text-[#efeee8]', className)} {...props} />;
+  return <td className={cn('px-3 py-2.5 align-middle text-[var(--ink-primary)]', className)} {...props} />;
 }

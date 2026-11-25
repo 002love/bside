@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-interface PixelEqProps {
+export interface PixelEqProps {
   active?: boolean;
   className?: string;
 }
@@ -21,20 +21,40 @@ export function PixelEq({ active = true, className }: PixelEqProps) {
       {COLUMNS.map((animClass, colIdx) => (
         <span
           key={colIdx}
-          className="relative flex h-full w-[3px] items-end overflow-hidden bg-[#2b2b27]/40"
+          className="relative flex h-full w-[3px] items-end overflow-hidden rounded-[var(--radius-pill)] bg-[var(--border-subtle)]"
         >
           <span
             className={cn(
-              'block w-[3px] overflow-hidden',
+              'block w-[3px] overflow-hidden rounded-[var(--radius-pill)]',
               active ? animClass : 'h-[3px]',
             )}
           >
-            {/* 4 stacked crisp 3x3px pixel blocks with 1px vertical gaps */}
+            {/* 4 stacked 3x3px equalizer bars */}
             <span className="flex flex-col gap-[1px]">
-              <span className={cn('block h-[3px] w-[3px]', active ? 'bg-[#89b471]' : 'bg-[#45453e]')} />
-              <span className={cn('block h-[3px] w-[3px]', active ? 'bg-[#89b471]' : 'bg-[#45453e]')} />
-              <span className={cn('block h-[3px] w-[3px]', active ? 'bg-[#89b471]' : 'bg-[#45453e]')} />
-              <span className={cn('block h-[3px] w-[3px]', active ? 'bg-[#89b471]' : 'bg-[#45453e]')} />
+              <span
+                className={cn(
+                  'block h-[3px] w-[3px]',
+                  active ? 'bg-[var(--accent-primary)]' : 'bg-[var(--border-strong)]',
+                )}
+              />
+              <span
+                className={cn(
+                  'block h-[3px] w-[3px]',
+                  active ? 'bg-[var(--accent-primary)]' : 'bg-[var(--border-strong)]',
+                )}
+              />
+              <span
+                className={cn(
+                  'block h-[3px] w-[3px]',
+                  active ? 'bg-[var(--accent-primary)]' : 'bg-[var(--border-strong)]',
+                )}
+              />
+              <span
+                className={cn(
+                  'block h-[3px] w-[3px]',
+                  active ? 'bg-[var(--accent-primary)]' : 'bg-[var(--border-strong)]',
+                )}
+              />
             </span>
           </span>
         </span>
@@ -43,17 +63,17 @@ export function PixelEq({ active = true, className }: PixelEqProps) {
   );
 }
 
-interface PixelDotProps {
+export interface PixelDotProps {
   active?: boolean;
   tone?: 'sage' | 'amber' | 'rust' | 'muted';
   className?: string;
 }
 
 const TONE_MAP = {
-  sage: 'bg-[#89b471]',
-  amber: 'bg-[#c48a47]',
-  rust: 'bg-[#b85d4f]',
-  muted: 'bg-[#5c5b55]',
+  sage: 'bg-[var(--accent-primary)]',
+  amber: 'bg-[var(--warning)]',
+  rust: 'bg-[var(--danger)]',
+  muted: 'bg-[var(--ink-muted)]',
 } as const;
 
 export function PixelDot({ active = true, tone = 'sage', className }: PixelDotProps) {
@@ -61,9 +81,9 @@ export function PixelDot({ active = true, tone = 'sage', className }: PixelDotPr
     <span
       aria-hidden="true"
       className={cn(
-        'inline-block h-[6px] w-[6px] shrink-0 rounded-none',
+        'inline-block h-[7px] w-[7px] shrink-0 rounded-[var(--radius-pill)]',
         TONE_MAP[tone],
-        active && 'animate-pixel-blink',
+        active && (tone === 'sage' ? 'animate-live-dot' : 'animate-pixel-blink'),
         className,
       )}
     />

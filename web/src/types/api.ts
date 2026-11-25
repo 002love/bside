@@ -1,3 +1,10 @@
+export interface AccountProfile {
+  user_uri: string;
+  username: string;
+  display_name: string;
+  image_url: string | null;
+}
+
 export interface StatsSummary {
   total_plays: number;
   unique_tracks: number;
@@ -40,6 +47,7 @@ export interface FriendSummary {
   latest_cover_url: string | null;
   latest_spotify_url: string;
   is_live: boolean;
+  is_self?: boolean;
 }
 
 export interface ListenRecord {
@@ -49,6 +57,7 @@ export interface ListenRecord {
   logged_at_ms: number;
   user_uri: string;
   user_name: string;
+  user_image_url?: string | null;
   track_uri: string;
   track_name: string;
   artist_name: string;
@@ -57,6 +66,7 @@ export interface ListenRecord {
   album_uri: string | null;
   context_name: string | null;
   context_uri: string | null;
+  context_image_url?: string | null;
   item_type: string;
   all_artists: string | null;
   duration_ms: number | null;
@@ -77,10 +87,24 @@ export interface ListenRecord {
   spotify_url: string;
 }
 
+export interface PaginatedHistoryResponse {
+  items: ListenRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 export interface OverviewResponse {
   stats: StatsSummary;
   friends_summary: FriendSummary[];
   recent_listens: ListenRecord[];
+}
+
+export interface ContextListener {
+  user_uri: string;
+  user_name: string;
+  image_url?: string | null;
 }
 
 export interface ContextSummary {
@@ -91,6 +115,8 @@ export interface ContextSummary {
   context_type: string;
   context_owner: string | null;
   is_private: boolean;
+  image_url?: string | null;
+  listeners?: ContextListener[];
   unique_tracks: number;
   total_plays: number;
   first_seen_ms: number;
@@ -102,6 +128,7 @@ export interface RebuiltTrack {
   track_name: string;
   all_artists: string;
   album_name: string | null;
+  cover_url?: string | null;
   duration_ms: number | null;
   release_date: string | null;
   popularity: number | null;
@@ -165,6 +192,7 @@ export interface StoredProfile {
   public_playlists: PublicPlaylist[];
   first_seen_ms: number;
   updated_at_ms: number;
+  is_self?: boolean;
 }
 
 export interface ProfileEvent {
@@ -200,6 +228,8 @@ export interface LiveFriendItem {
   context_type: string | null;
   context_owner: string | null;
   context_is_private: boolean;
+  context_image_url?: string | null;
+  is_self?: boolean;
   spotify_url: string;
 }
 
@@ -208,7 +238,24 @@ export interface LiveSnapshot {
   status: string; // "live" | "connecting" | "offline" | "unauthenticated" | "error"
   message: string | null;
   account: string | null;
+  account_uri?: string | null;
+  account_profile?: AccountProfile | null;
   updated_at_ms: number | null;
   poll_interval_secs: number;
   friends: LiveFriendItem[];
+}
+
+export interface AvatarLookupEntry {
+  user_uri: string;
+  name: string;
+  imageUrl: string | null;
+  isSelf?: boolean;
+}
+
+export type AvatarMap = Record<string, AvatarLookupEntry>;
+
+export function buildUsersParam(selectedUsers: string[]): string | null {
+  const cleaned = selectedUsers.map((u) => u.trim()).filter(Boolean);
+  if (cleaned.length === 0) return null;
+  return cleaned.join(',');
 }

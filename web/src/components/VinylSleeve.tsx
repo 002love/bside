@@ -50,12 +50,13 @@ export function VinylSleeve({
   }, [coverUrl]);
 
   const cfg = SIZE_CONFIG[size];
-  const initials = (title || 'BS')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() ?? '')
-    .join('') || 'BS';
+  const initials =
+    (title || 'BS')
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? '')
+      .join('') || 'BS';
 
   return (
     <div
@@ -72,7 +73,10 @@ export function VinylSleeve({
       >
         <svg
           viewBox="0 0 100 100"
-          className={cn('h-full w-full drop-shadow-[0_2px_4px_rgba(0,0,0,0.65)]', spinning && 'animate-vinyl-spin')}
+          className={cn(
+            'h-full w-full drop-shadow-[0_2px_6px_rgba(0,0,0,0.65)]',
+            spinning && 'animate-vinyl-spin',
+          )}
           aria-hidden="true"
         >
           {/* Outer matte charcoal vinyl disc */}
@@ -87,31 +91,45 @@ export function VinylSleeve({
           <path
             d="M 18 26 A 42 42 0 0 1 72 16"
             fill="none"
-            stroke="rgba(239, 238, 232, 0.14)"
+            stroke="rgba(255, 255, 255, 0.14)"
             strokeWidth="3.5"
             strokeLinecap="butt"
           />
           <path
             d="M 82 74 A 42 42 0 0 1 28 84"
             fill="none"
-            stroke="rgba(239, 238, 232, 0.08)"
+            stroke="rgba(255, 255, 255, 0.08)"
             strokeWidth="2.5"
             strokeLinecap="butt"
           />
-          {/* Moss-green center label */}
-          <circle cx="50" cy="50" r="17" fill="#557445" stroke="#2b2b27" strokeWidth="1" />
+          {/* Accent center label */}
+          <circle
+            cx="50"
+            cy="50"
+            r="17"
+            fill="var(--accent-muted)"
+            stroke="var(--border-subtle)"
+            strokeWidth="1"
+          />
           {/* Subtle inner label ring & alignment mark */}
-          <circle cx="50" cy="50" r="12" fill="none" stroke="rgba(239, 238, 232, 0.25)" strokeWidth="0.75" />
-          <rect x="48.5" y="36" width="3" height="4" fill="#efeee8" opacity="0.65" />
+          <circle
+            cx="50"
+            cy="50"
+            r="12"
+            fill="none"
+            stroke="rgba(255, 255, 255, 0.28)"
+            strokeWidth="0.75"
+          />
+          <rect x="48.5" y="36" width="3" height="4" fill="#ffffff" opacity="0.75" />
           {/* Center spindle hole */}
           <circle cx="50" cy="50" r="3.4" fill="#111110" stroke="#2b2b27" strokeWidth="0.8" />
         </svg>
       </div>
 
-      {/* Square 0px-radius album cover sleeve */}
+      {/* Album cover sleeve (rounded in Spotify Dark, sharp 0px in Classic) */}
       <div
         className={cn(
-          'relative z-10 overflow-hidden rounded-none border border-[#2b2b27] bg-[#141412] shadow-[2px_0_6px_rgba(0,0,0,0.55)]',
+          'relative z-10 overflow-hidden rounded-[calc(var(--radius-control)*0.75)] border border-[var(--border-strong)] bg-[var(--bg-inset)] shadow-[2px_0_8px_rgba(0,0,0,0.55)]',
           cfg.sleeve,
         )}
       >
@@ -121,19 +139,24 @@ export function VinylSleeve({
             alt={title}
             loading="lazy"
             onError={() => setImgFailed(true)}
-            className="h-full w-full rounded-none object-cover"
+            className="h-full w-full object-cover"
           />
         ) : (
-          <div className="relative flex h-full w-full flex-col items-center justify-center bg-[#141412] p-1">
-            <div className="pointer-events-none absolute inset-1 border border-[#2b2b27]/80" />
-            <div className="h-1.5 w-1.5 bg-[#557445] mb-1" />
-            <span className={cn('font-mono font-semibold uppercase tracking-widest text-[#8d8c84]', cfg.fallbackText)}>
+          <div className="relative flex h-full w-full flex-col items-center justify-center bg-[var(--bg-inset)] p-1">
+            <div className="pointer-events-none absolute inset-1 rounded-[calc(var(--radius-control)*0.4)] border border-[var(--border-subtle)]" />
+            <div className="mb-1 h-1.5 w-1.5 rounded-[var(--radius-pill)] bg-[var(--accent-primary)]" />
+            <span
+              className={cn(
+                'font-mono font-semibold uppercase tracking-widest text-[var(--ink-muted)]',
+                cfg.fallbackText,
+              )}
+            >
               {initials}
             </span>
           </div>
         )}
         {/* Subtle left spine crease */}
-        <div className="pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-[#efeee8]/10" />
+        <div className="pointer-events-none absolute inset-y-0 left-0 w-[2px] bg-white/10" />
       </div>
     </div>
   );

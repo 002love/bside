@@ -14,14 +14,14 @@ export function SelectTrigger({
   return (
     <RadixSelect.Trigger
       className={cn(
-        'flex h-8 items-center justify-between gap-2 rounded-none border border-[#2b2b27] bg-[#141412] px-3 font-mono text-[11px] text-[#efeee8] hover:border-[#45453e] hover:bg-[#20201d] focus:border-[#89b471] focus:outline-none cursor-pointer',
+        'flex h-8 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-3 text-xs text-[var(--ink-primary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus:border-[var(--accent-primary)] focus:outline-none cursor-pointer',
         className,
       )}
       {...props}
     >
       {children}
       <RadixSelect.Icon asChild>
-        <ChevronDown className="h-3.5 w-3.5 text-[#8d8c84]" />
+        <ChevronDown className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
       </RadixSelect.Icon>
     </RadixSelect.Trigger>
   );
@@ -36,9 +36,9 @@ export function SelectContent({
     <RadixSelect.Portal>
       <RadixSelect.Content
         position="popper"
-        sideOffset={4}
+        sideOffset={6}
         className={cn(
-          'z-50 min-w-[12rem] overflow-hidden rounded-none border border-[#45453e] bg-[#181816] p-1 text-[#efeee8] shadow-edge',
+          'z-50 min-w-[12rem] overflow-hidden bside-popover p-1',
           className,
         )}
         {...props}
@@ -57,7 +57,7 @@ export function SelectItem({
   return (
     <RadixSelect.Item
       className={cn(
-        'relative flex w-full cursor-pointer select-none items-center rounded-none py-1.5 pr-8 pl-2.5 font-mono text-[11px] text-[#efeee8] outline-none focus:bg-[#20201d] focus:text-[#89b471] data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        'relative flex w-full cursor-pointer select-none items-center rounded-[calc(var(--radius-control)*0.75)] py-1.5 pr-8 pl-2.5 text-xs text-[var(--ink-primary)] outline-none transition-colors focus:bg-[var(--bg-hover)] focus:text-[var(--accent-primary)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className,
       )}
       {...props}
@@ -65,7 +65,7 @@ export function SelectItem({
       <RadixSelect.ItemText>{children}</RadixSelect.ItemText>
       <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
         <RadixSelect.ItemIndicator>
-          <Check className="h-3.5 w-3.5 text-[#89b471]" />
+          <Check className="h-3.5 w-3.5 text-[var(--accent-primary)]" />
         </RadixSelect.ItemIndicator>
       </span>
     </RadixSelect.Item>

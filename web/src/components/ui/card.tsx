@@ -1,11 +1,16 @@
 import type { HTMLAttributes } from 'react';
 import { cn } from '@/lib/utils';
 
-export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+export interface CardProps extends HTMLAttributes<HTMLDivElement> {
+  interactive?: boolean;
+}
+
+export function Card({ className, interactive = false, ...props }: CardProps) {
   return (
     <div
       className={cn(
-        'rounded-none border border-[#2b2b27] bg-[#181816] text-[#efeee8]',
+        interactive ? 'bside-card-interactive' : 'bside-card',
+        'text-[var(--ink-primary)]',
         className,
       )}
       {...props}
@@ -20,14 +25,17 @@ export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElemen
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn('font-display text-lg font-bold uppercase tracking-tight text-[#efeee8]', className)}
+      className={cn(
+        'font-display text-lg font-bold tracking-tight text-[var(--ink-primary)]',
+        className,
+      )}
       {...props}
     />
   );
 }
 
 export function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn('font-mono text-[11px] text-[#8d8c84]', className)} {...props} />;
+  return <p className={cn('text-xs text-[var(--ink-muted)]', className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {

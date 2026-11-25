@@ -8,15 +8,18 @@ export function ScrollArea({
   ...props
 }: ComponentPropsWithoutRef<typeof RadixScrollArea.Root>) {
   return (
-    <RadixScrollArea.Root className={cn('relative overflow-hidden rounded-none', className)} {...props}>
-      <RadixScrollArea.Viewport className="h-full w-full rounded-none">
+    <RadixScrollArea.Root
+      className={cn('relative overflow-hidden rounded-[var(--radius-control)]', className)}
+      {...props}
+    >
+      <RadixScrollArea.Viewport className="h-full w-full rounded-[inherit] [&>div]:!block">
         {children}
       </RadixScrollArea.Viewport>
       <RadixScrollArea.Scrollbar
         orientation="vertical"
         className="flex w-2 touch-none select-none p-0.5 transition-colors"
       >
-        <RadixScrollArea.Thumb className="relative flex-1 rounded-none bg-[#2b2b27] hover:bg-[#45453e]" />
+        <RadixScrollArea.Thumb className="relative flex-1 rounded-[var(--radius-pill)] bg-[var(--border-strong)] hover:bg-[var(--ink-muted)]" />
       </RadixScrollArea.Scrollbar>
       <RadixScrollArea.Corner />
     </RadixScrollArea.Root>

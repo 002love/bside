@@ -11,7 +11,7 @@ export function TabsList({
   return (
     <RadixTabs.List
       className={cn(
-        'inline-flex items-center gap-0 rounded-none border border-[#2b2b27] bg-[#141412] p-0 text-[#8d8c84]',
+        'inline-flex items-center gap-1 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] p-1 text-[var(--ink-muted)]',
         className,
       )}
       {...props}
@@ -26,7 +26,7 @@ export function TabsTrigger({
   return (
     <RadixTabs.Trigger
       className={cn(
-        'inline-flex items-center justify-center gap-1.5 rounded-none border-r border-[#2b2b27] last:border-r-0 px-3.5 py-2 font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors cursor-pointer hover:bg-[#20201d] hover:text-[#efeee8] data-[state=active]:bg-[#efeee8] data-[state=active]:text-[#111110] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#89b471]',
+        'inline-flex items-center justify-center gap-1.5 rounded-[calc(var(--radius-control)*0.75)] px-3.5 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap transition-all cursor-pointer hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)] data-[state=active]:bg-[var(--accent-primary)] data-[state=active]:text-[var(--ink-on-accent)] data-[state=active]:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]/70',
         className,
       )}
       {...props}
@@ -40,7 +40,7 @@ export function TabsContent({
 }: ComponentPropsWithoutRef<typeof RadixTabs.Content>) {
   return (
     <RadixTabs.Content
-      className={cn('mt-6 focus-visible:outline-none', className)}
+      className={cn('mt-6 animate-fade-up focus-visible:outline-none', className)}
       {...props}
     />
   );
