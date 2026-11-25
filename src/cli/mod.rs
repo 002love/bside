@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::service::{self, ServiceConfig};
-use crate::spotify::FriendActivity;
+use crate::spotify::{FriendActivity, TransportPreference};
 
 #[derive(Parser)]
 #[command(
@@ -52,7 +52,7 @@ enum Commands {
         raw: bool,
     },
 
-    /// Continuously poll Friend Activity and log listens, skips, repeats, sessions, and profile changes
+    /// Continuously watch Friend Activity (realtime push + polling fallback) and log listens, skips, repeats, sessions, and profile changes
     Watch {
         /// Filter to specific friend(s) by name or Spotify URI (repeatable; omit to log all)
         #[arg(short, long)]
@@ -69,6 +69,14 @@ enum Commands {
         /// Maximum consecutive inferred repeat cycles per single continuous track play
         #[arg(long, default_value_t = 10)]
         max_inferred_repeats: u32,
+
+        /// Transport mode: auto (Dealer WS -> Mercury -> HTTP poll), dealer, mercury, or poll
+        #[arg(long, value_enum, default_value_t = TransportArg::Auto)]
+        transport: TransportArg,
+
+        /// Log raw Dealer/Mercury push messages to stderr for protocol debugging
+        #[arg(long)]
+        debug_push: bool,
     },
 
     /// Show stored friend profiles, public playlists, and recently played artists
@@ -217,6 +225,14 @@ enum Commands {
         /// Do not write live feed listens into SQLite from the UI process
         #[arg(long)]
         no_log: bool,
+
+        /// Transport mode: auto (Dealer WS -> Mercury -> HTTP poll), dealer, mercury, or poll
+        #[arg(long, value_enum, default_value_t = TransportArg::Auto)]
+        transport: TransportArg,
+
+        /// Log raw Dealer/Mercury push messages to stderr for protocol debugging
+        #[arg(long)]
+        debug_push: bool,
     },
 }
 
@@ -259,6 +275,25 @@ enum ServiceAction {
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(super) enum TransportArg {
+    Auto,
+    Dealer,
+    Mercury,
+    Poll,
+}
+
+impl From<TransportArg> for TransportPreference {
+    fn from(arg: TransportArg) -> Self {
+        match arg {
+            TransportArg::Auto => TransportPreference::Auto,
+            TransportArg::Dealer => TransportPreference::Dealer,
+            TransportArg::Mercury => TransportPreference::Mercury,
+            TransportArg::Poll => TransportPreference::Poll,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -336,6 +371,8 @@ pub async fn run() -> Result<()> {
             interval,
             profile_interval,
             max_inferred_repeats,
+            transport,
+            debug_push,
         } => {
             watch::run_watch(
                 &cache_dir,
@@ -344,6 +381,8 @@ pub async fn run() -> Result<()> {
                 interval,
                 profile_interval,
                 max_inferred_repeats,
+                transport.into(),
+                debug_push,
             )
             .await?
         }
@@ -424,6 +463,8 @@ pub async fn run() -> Result<()> {
             poll_interval,
             offline,
             no_log,
+            transport,
+            debug_push,
         } => {
             let config = crate::web::UiConfig {
                 cache_dir,
@@ -434,6 +475,8 @@ pub async fn run() -> Result<()> {
                 poll_interval_secs: poll_interval,
                 offline,
                 log_to_db: !no_log,
+                transport: transport.into(),
+                debug_push,
             };
             crate::web::run_server(config).await?
         }

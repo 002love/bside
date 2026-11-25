@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
+
+pub(super) const TRACK_CACHE_CAP: usize = 2048;
 
 fn default_item_type() -> String {
     "track".to_string()
@@ -164,11 +166,40 @@ pub struct PublicPlaylist {
     pub image_url: Option<String>,
 }
 
-/// Cached display names and metadata for users and playlists so polling only fetches item metadata.
+/// Cached display names and metadata for users, playlists, and tracks/episodes
+/// so polling and real-time push updates only fetch uncached metadata.
 #[derive(Default)]
 pub struct NameCache {
     pub(super) profiles: HashMap<String, (Option<String>, Option<String>)>,
     pub(super) playlists: HashMap<String, PlaylistInfo>,
+    pub(super) tracks: HashMap<String, FriendTrack>,
+    track_order: VecDeque<String>,
+}
+
+impl NameCache {
+    pub(super) fn get_track(&self, uri: &str) -> Option<FriendTrack> {
+        self.tracks.get(uri).map(|track| {
+            let mut cloned = track.clone();
+            cloned.context = None;
+            cloned
+        })
+    }
+
+    pub(super) fn insert_track(&mut self, uri: String, mut track: FriendTrack) {
+        track.context = None;
+        if !self.tracks.contains_key(&uri) {
+            while self.tracks.len() >= TRACK_CACHE_CAP {
+                if let Some(oldest) = self.track_order.pop_front() {
+                    self.tracks.remove(&oldest);
+                } else {
+                    self.tracks.clear();
+                    break;
+                }
+            }
+            self.track_order.push_back(uri.clone());
+        }
+        self.tracks.insert(uri, track);
+    }
 }
 
 #[derive(Debug, Clone)]

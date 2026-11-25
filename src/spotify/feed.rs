@@ -195,20 +195,8 @@ pub(super) fn parse_live_feed(json: &serde_json::Value) -> Result<Vec<LiveEntry>
     Ok(entries)
 }
 
-async fn fetch_legacy_buddylist(session: &Session) -> Result<Vec<FriendActivity>> {
-    let raw = session
-        .spclient()
-        .request_as_json(&Method::GET, BUDDYLIST_ENDPOINT, None, None)
-        .await
-        .map_err(|e| anyhow!("Failed to fetch legacy buddylist from spclient: {e}"))?;
-
-    let mut parsed: BuddyListResponse = serde_json::from_slice(&raw).with_context(|| {
-        let preview = String::from_utf8_lossy(&raw);
-        let snippet: String = preview.chars().take(300).collect();
-        format!("Failed to parse buddylist JSON (preview: {snippet})")
-    })?;
-
-    for item in &mut parsed.friends {
+pub(super) fn normalize_legacy_friends(friends: &mut [FriendActivity]) {
+    for item in friends {
         if item.track.artists.is_empty()
             && let Some(artist) = item.track.artist.clone()
         {
@@ -231,38 +219,31 @@ async fn fetch_legacy_buddylist(session: &Session) -> Result<Vec<FriendActivity>
             }
         }
     }
+}
 
+async fn fetch_legacy_buddylist(session: &Session) -> Result<Vec<FriendActivity>> {
+    let raw = session
+        .spclient()
+        .request_as_json(&Method::GET, BUDDYLIST_ENDPOINT, None, None)
+        .await
+        .map_err(|e| anyhow!("Failed to fetch legacy buddylist from spclient: {e}"))?;
+
+    let mut parsed: BuddyListResponse = serde_json::from_slice(&raw).with_context(|| {
+        let preview = String::from_utf8_lossy(&raw);
+        let snippet: String = preview.chars().take(300).collect();
+        format!("Failed to parse buddylist JSON (preview: {snippet})")
+    })?;
+
+    normalize_legacy_friends(&mut parsed.friends);
     Ok(parsed.friends)
 }
 
-pub async fn fetch_buddylist(
-    session: &Session,
-    name_cache: &mut NameCache,
-) -> Result<Vec<FriendActivity>> {
-    let live_entries = match post_listening_activity(session, LISTENING_ACTIVITY_LIMIT).await {
-        Ok(raw) => {
-            let json: serde_json::Value = serde_json::from_slice(&raw).with_context(|| {
-                let preview = String::from_utf8_lossy(&raw);
-                let snippet: String = preview.chars().take(300).collect();
-                format!("Failed to parse listening-activity JSON (preview: {snippet})")
-            })?;
-            parse_live_feed(&json)?
-        }
-        Err(_) => {
-            return fetch_legacy_buddylist(session).await;
-        }
-    };
-
-    if live_entries.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let entity_uris: Vec<String> = live_entries.iter().map(|e| e.track_uri.clone()).collect();
-    let items = fetch_items_metadata(session, &entity_uris).await?;
-    resolve_missing_names(session, &live_entries, name_cache).await;
-
-    let mut result = Vec::with_capacity(live_entries.len());
-    for entry in live_entries {
+pub(super) fn materialize_live_entries(
+    entries: Vec<LiveEntry>,
+    name_cache: &NameCache,
+) -> Vec<FriendActivity> {
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
         let uid = user_id_from_uri(&entry.user_uri);
         let (user_name, user_image) = name_cache
             .profiles
@@ -273,10 +254,8 @@ pub async fn fetch_buddylist(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(uid);
 
-        let mut track = match items.get(&entry.track_uri) {
-            Some(ItemMetadata::Track(t)) => build_track_from_proto(&entry.track_uri, t),
-            Some(ItemMetadata::Episode(ep)) => build_episode_from_proto(&entry.track_uri, ep),
-            None => FriendTrack {
+        let mut track = name_cache.get_track(&entry.track_uri).unwrap_or_else(|| {
+            FriendTrack {
                 uri: entry.track_uri.clone(),
                 name: entry.track_uri.clone(),
                 item_type: if entry.track_uri.starts_with("spotify:episode:") {
@@ -285,8 +264,8 @@ pub async fn fetch_buddylist(
                     "track".to_string()
                 },
                 ..Default::default()
-            },
-        };
+            }
+        });
 
         let context = entry.context_uri.as_ref().map(|ctx_uri| {
             if is_liked_songs_context(ctx_uri, "", "") {
@@ -321,11 +300,19 @@ pub async fn fetch_buddylist(
             } else {
                 let is_album_ctx = track.album.as_ref().is_some_and(|a| &a.uri == ctx_uri);
                 let ctx_name = if is_album_ctx {
-                    track.album.as_ref().map(|a| a.name.clone()).unwrap_or_default()
+                    track
+                        .album
+                        .as_ref()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_default()
                 } else if let Some(a) = track.artists.iter().find(|a| &a.uri == ctx_uri) {
                     a.name.clone()
                 } else if track.artist.as_ref().is_some_and(|a| &a.uri == ctx_uri) {
-                    track.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default()
+                    track
+                        .artist
+                        .as_ref()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_default()
                 } else if ctx_uri == &entry.track_uri {
                     track.name.clone()
                 } else {
@@ -374,7 +361,60 @@ pub async fn fetch_buddylist(
         });
     }
 
-    Ok(result)
+    result
+}
+
+pub(super) async fn enrich_live_entries(
+    session: &Session,
+    entries: Vec<LiveEntry>,
+    name_cache: &mut NameCache,
+) -> Result<Vec<FriendActivity>> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let missing_uris: Vec<String> = entries
+        .iter()
+        .map(|e| &e.track_uri)
+        .filter(|uri| !name_cache.tracks.contains_key(uri.as_str()))
+        .cloned()
+        .collect();
+
+    if !missing_uris.is_empty() {
+        let items = fetch_items_metadata(session, &missing_uris).await?;
+        for (uri, meta) in items {
+            let track = match meta {
+                ItemMetadata::Track(t) => build_track_from_proto(&uri, &t),
+                ItemMetadata::Episode(ep) => build_episode_from_proto(&uri, &ep),
+            };
+            name_cache.insert_track(uri, track);
+        }
+    }
+
+    resolve_missing_names(session, &entries, name_cache).await;
+
+    Ok(materialize_live_entries(entries, name_cache))
+}
+
+pub async fn fetch_buddylist(
+    session: &Session,
+    name_cache: &mut NameCache,
+) -> Result<Vec<FriendActivity>> {
+    let live_entries = match post_listening_activity(session, LISTENING_ACTIVITY_LIMIT).await {
+        Ok(raw) => {
+            let json: serde_json::Value = serde_json::from_slice(&raw).with_context(|| {
+                let preview = String::from_utf8_lossy(&raw);
+                let snippet: String = preview.chars().take(300).collect();
+                format!("Failed to parse listening-activity JSON (preview: {snippet})")
+            })?;
+            parse_live_feed(&json)?
+        }
+        Err(_) => {
+            return fetch_legacy_buddylist(session).await;
+        }
+    };
+
+    enrich_live_entries(session, live_entries, name_cache).await
 }
 
 pub async fn enrich_activity(

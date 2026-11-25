@@ -27,11 +27,13 @@ use crate::db::{
     RebuiltTrack, StatsSummary, StoredProfile, spotify_uri_to_url,
 };
 use crate::spotify::{
-    FriendActivity, NameCache, OwnPlaybackObserver, connect_cached, enrich_activity,
-    fetch_buddylist, fetch_user_profile, login_oauth, open_cache,
+    ActivityEvent, FriendActivity, NameCache, OwnPlaybackObserver, StreamConfig,
+    TransportPreference, connect_cached, enrich_activity, fetch_user_profile, login_oauth,
+    open_cache, spawn_activity_stream,
 };
 
 const MIN_POLL_INTERVAL_SECS: u64 = 10;
+const DEFAULT_RESYNC_INTERVAL_SECS: u64 = 60;
 const MANUAL_REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 const MANUAL_REFRESH_WAIT: Duration = Duration::from_secs(3);
 const SSE_KEEP_ALIVE_SECS: u64 = 15;
@@ -52,6 +54,8 @@ pub struct UiConfig {
     pub poll_interval_secs: u64,
     pub offline: bool,
     pub log_to_db: bool,
+    pub transport: TransportPreference,
+    pub debug_push: bool,
 }
 
 impl UiConfig {
@@ -68,6 +72,8 @@ impl UiConfig {
             poll_interval_secs: 15,
             offline: false,
             log_to_db: true,
+            transport: TransportPreference::Auto,
+            debug_push: false,
         }
     }
 }
@@ -160,6 +166,7 @@ impl From<&FriendActivity> for LiveFriendItem {
 pub struct LiveSnapshot {
     pub connected: bool,
     pub status: String, // "live" | "connecting" | "offline" | "unauthenticated" | "error"
+    pub transport: Option<String>, // "dealer_push" | "mercury_push" | "http_polling" | "offline" | null
     pub message: Option<String>,
     pub account: Option<String>,
     pub account_uri: Option<String>,
@@ -196,6 +203,7 @@ impl LiveHub {
             LiveSnapshot {
                 connected: false,
                 status: "offline".to_string(),
+                transport: Some("offline".to_string()),
                 message: Some("Running in offline archive mode".to_string()),
                 account: None,
                 account_uri: None,
@@ -208,6 +216,7 @@ impl LiveHub {
             LiveSnapshot {
                 connected: false,
                 status: "connecting".to_string(),
+                transport: None,
                 message: Some("Connecting to Spotify...".to_string()),
                 account: None,
                 account_uri: None,
@@ -839,6 +848,7 @@ async fn api_auth_login(State(state): State<AppState>) -> Json<AuthLoginResponse
         live.publish(LiveSnapshot {
             connected: false,
             status: "connecting".to_string(),
+            transport: prev.transport,
             message: Some("Waiting for Spotify browser login...".to_string()),
             account: prev.account,
             account_uri: prev.account_uri,
@@ -870,6 +880,7 @@ async fn api_auth_login(State(state): State<AppState>) -> Json<AuthLoginResponse
                 live.publish(LiveSnapshot {
                     connected: false,
                     status: if has_creds { "error" } else { "unauthenticated" }.to_string(),
+                    transport: if has_creds { prev.transport } else { None },
                     message: Some(format!("Spotify login failed: {err_msg}")),
                     account: if has_creds { prev.account } else { None },
                     account_uri: if has_creds { prev.account_uri } else { None },
@@ -889,6 +900,7 @@ async fn api_auth_login(State(state): State<AppState>) -> Json<AuthLoginResponse
                 live.publish(LiveSnapshot {
                     connected: false,
                     status: if has_creds { "error" } else { "unauthenticated" }.to_string(),
+                    transport: if has_creds { prev.transport } else { None },
                     message: Some("Spotify login timed out. Please try again.".to_string()),
                     account: if has_creds { prev.account } else { None },
                     account_uri: if has_creds { prev.account_uri } else { None },
@@ -924,6 +936,7 @@ async fn api_auth_logout(
         .publish(LiveSnapshot {
             connected: false,
             status: "unauthenticated".to_string(),
+            transport: None,
             message: Some("Signed out of Spotify".to_string()),
             account: None,
             account_uri: None,
@@ -1065,185 +1078,239 @@ fn should_handle_as_same_play(
     within_track_window && ts_delta < max_gap && elapsed_from_cycle < max_gap
 }
 
-fn log_poll_activities_to_db(
-    db_path: &Path,
-    activities: &[FriendActivity],
+fn process_single_db_activity(
+    db: &Database,
+    item: &FriendActivity,
     active_plays: &mut HashMap<String, ActivePlay>,
     now_ms: i64,
     grace_ms: i64,
-) -> Result<()> {
-    let db = Database::open(db_path)?;
-    let mut seen_users: HashSet<String> = HashSet::new();
+) -> Result<String> {
+    let user_uri = item.user.uri.clone();
 
-    for item in activities {
-        let user_uri = item.user.uri.clone();
-        seen_users.insert(user_uri.clone());
+    let same_track = active_plays
+        .get(&user_uri)
+        .is_some_and(|prev| prev.track_uri == item.track.uri);
 
-        let same_track = active_plays
-            .get(&user_uri)
-            .is_some_and(|prev| prev.track_uri == item.track.uri);
+    let handle_as_same_play = if same_track {
+        let prev = active_plays.get(&user_uri).unwrap();
+        should_handle_as_same_play(
+            prev.is_playing,
+            prev.cycle_started_at_ms,
+            prev.last_seen_ts_ms,
+            prev.duration_ms,
+            item.playing,
+            item.timestamp,
+            grace_ms,
+        )
+    } else {
+        false
+    };
 
-        let handle_as_same_play = if same_track {
-            let prev = active_plays.get(&user_uri).unwrap();
-            should_handle_as_same_play(
-                prev.is_playing,
-                prev.cycle_started_at_ms,
-                prev.last_seen_ts_ms,
-                prev.duration_ms,
-                item.playing,
-                item.timestamp,
-                grace_ms,
-            )
-        } else {
-            false
-        };
+    if !handle_as_same_play {
+        let mut session_id = None;
+        let prev_opt = active_plays.remove(&user_uri);
+        let had_active_play = prev_opt.is_some();
 
-        if !handle_as_same_play {
-            let mut session_id = None;
-            let prev_opt = active_plays.remove(&user_uri);
-            let had_active_play = prev_opt.is_some();
-
-            if let Some(prev) = prev_opt {
-                session_id = prev.session_id;
-                let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
-                if prev.is_playing {
-                    let switched_to_next_track = prev.track_uri != item.track.uri;
-                    let _ = db.finalize_play(
-                        &user_uri,
-                        &prev.track_uri,
-                        prev.cycle_started_at_ms,
-                        ended_at_ms,
-                        prev.duration_ms,
-                        switched_to_next_track,
-                    );
-                }
-                if !item.playing
-                    && let Some(sid) = session_id.take()
-                {
-                    let _ = db.end_session(sid, ended_at_ms);
-                }
-            }
-
-            let skip_cold_start_last = !item.playing
-                && !had_active_play
-                && db
-                    .has_recent_listen_near(
-                        &user_uri,
-                        &item.track.uri,
-                        item.timestamp,
-                        item.duration_ms().unwrap_or(0).max(180_000),
-                    )
-                    .unwrap_or(false);
-
-            if !skip_cold_start_last {
-                db.insert_listen(item)?;
-            }
-
-            if item.playing {
-                if let Some(sid) = session_id {
-                    let _ = db.touch_session(sid, now_ms, true);
-                } else {
-                    let start_ms = item.timestamp.min(now_ms);
-                    if let Ok(sid) = db.start_session(&user_uri, &item.user.name, start_ms) {
-                        let _ = db.touch_session(sid, now_ms, true);
-                        session_id = Some(sid);
-                    }
-                }
-            }
-
-            active_plays.insert(
-                user_uri,
-                ActivePlay {
-                    track_uri: item.track.uri.clone(),
-                    cycle_started_at_ms: item.timestamp,
-                    last_seen_ts_ms: item.timestamp,
-                    duration_ms: item.duration_ms(),
-                    inferred_cycles: 0,
-                    is_playing: item.playing,
-                    session_id,
-                    missed_polls: 0,
-                },
-            );
-        } else if let Some(prev) = active_plays.get_mut(&user_uri) {
-            prev.missed_polls = 0;
-            prev.last_seen_ts_ms = item.timestamp;
-
-            if prev.is_playing && !item.playing {
-                let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
+        if let Some(prev) = prev_opt {
+            session_id = prev.session_id;
+            let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
+            if prev.is_playing {
+                let switched_to_next_track = prev.track_uri != item.track.uri;
                 let _ = db.finalize_play(
                     &user_uri,
                     &prev.track_uri,
                     prev.cycle_started_at_ms,
                     ended_at_ms,
                     prev.duration_ms,
+                    switched_to_next_track,
+                );
+            }
+            if !item.playing
+                && let Some(sid) = session_id.take()
+            {
+                let _ = db.end_session(sid, ended_at_ms);
+            }
+        }
+
+        let skip_cold_start_last = !item.playing
+            && !had_active_play
+            && db
+                .has_recent_listen_near(
+                    &user_uri,
+                    &item.track.uri,
+                    item.timestamp,
+                    item.duration_ms().unwrap_or(0).max(180_000),
+                )
+                .unwrap_or(false);
+
+        if !skip_cold_start_last {
+            db.insert_listen(item)?;
+        }
+
+        if item.playing {
+            if let Some(sid) = session_id {
+                let _ = db.touch_session(sid, now_ms, true);
+            } else {
+                let start_ms = item.timestamp.min(now_ms);
+                if let Ok(sid) = db.start_session(&user_uri, &item.user.name, start_ms) {
+                    let _ = db.touch_session(sid, now_ms, true);
+                    session_id = Some(sid);
+                }
+            }
+        }
+
+        active_plays.insert(
+            user_uri.clone(),
+            ActivePlay {
+                track_uri: item.track.uri.clone(),
+                cycle_started_at_ms: item.timestamp,
+                last_seen_ts_ms: item.timestamp,
+                duration_ms: item.duration_ms(),
+                inferred_cycles: 0,
+                is_playing: item.playing,
+                session_id,
+                missed_polls: 0,
+            },
+        );
+    } else if let Some(prev) = active_plays.get_mut(&user_uri) {
+        prev.missed_polls = 0;
+        prev.last_seen_ts_ms = item.timestamp;
+
+        if prev.is_playing && !item.playing {
+            let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
+            let _ = db.finalize_play(
+                &user_uri,
+                &prev.track_uri,
+                prev.cycle_started_at_ms,
+                ended_at_ms,
+                prev.duration_ms,
+                false,
+            );
+            if let Some(sid) = prev.session_id.take() {
+                let _ = db.end_session(sid, ended_at_ms);
+            }
+            prev.is_playing = false;
+        } else if !prev.is_playing && item.playing {
+            let _ = db.mark_playing_seen(&user_uri, &prev.track_uri, prev.cycle_started_at_ms);
+            if prev.session_id.is_none()
+                && let Ok(sid) = db.start_session(&user_uri, &item.user.name, now_ms)
+            {
+                prev.session_id = Some(sid);
+            }
+            prev.is_playing = true;
+        } else if prev.is_playing && item.playing {
+            if let Some(sid) = prev.session_id {
+                let _ = db.touch_session(sid, now_ms, false);
+            }
+
+            if let Some(dur) = prev.duration_ms
+                && dur >= 30_000
+                && prev.inferred_cycles < MAX_INFERRED_REPEATS
+                && (now_ms - prev.cycle_started_at_ms) >= dur + grace_ms
+            {
+                let cycle_end = prev.cycle_started_at_ms + dur;
+                let _ = db.finalize_play(
+                    &user_uri,
+                    &prev.track_uri,
+                    prev.cycle_started_at_ms,
+                    cycle_end,
+                    Some(dur),
                     false,
                 );
-                if let Some(sid) = prev.session_id.take() {
-                    let _ = db.end_session(sid, ended_at_ms);
-                }
-                prev.is_playing = false;
-            } else if !prev.is_playing && item.playing {
-                let _ = db.mark_playing_seen(&user_uri, &prev.track_uri, prev.cycle_started_at_ms);
-                if prev.session_id.is_none()
-                    && let Ok(sid) = db.start_session(&user_uri, &item.user.name, now_ms)
-                {
-                    prev.session_id = Some(sid);
-                }
-                prev.is_playing = true;
-            } else if prev.is_playing && item.playing {
-                if let Some(sid) = prev.session_id {
-                    let _ = db.touch_session(sid, now_ms, false);
-                }
+                prev.cycle_started_at_ms = cycle_end;
+                prev.last_seen_ts_ms = cycle_end;
+                prev.inferred_cycles += 1;
 
-                if let Some(dur) = prev.duration_ms
-                    && dur >= 30_000
-                    && prev.inferred_cycles < MAX_INFERRED_REPEATS
-                    && (now_ms - prev.cycle_started_at_ms) >= dur + grace_ms
+                if db.insert_inferred_repeat(item, cycle_end).unwrap_or(false)
+                    && let Some(sid) = prev.session_id
                 {
-                    let cycle_end = prev.cycle_started_at_ms + dur;
-                    let _ = db.finalize_play(
-                        &user_uri,
-                        &prev.track_uri,
-                        prev.cycle_started_at_ms,
-                        cycle_end,
-                        Some(dur),
-                        false,
-                    );
-                    prev.cycle_started_at_ms = cycle_end;
-                    prev.last_seen_ts_ms = cycle_end;
-                    prev.inferred_cycles += 1;
-
-                    if db.insert_inferred_repeat(item, cycle_end).unwrap_or(false)
-                        && let Some(sid) = prev.session_id
-                    {
-                        let _ = db.touch_session(sid, now_ms, true);
-                    }
+                    let _ = db.touch_session(sid, now_ms, true);
                 }
             }
         }
     }
 
-    for (user_uri, state) in active_plays.iter_mut() {
-        if !seen_users.contains(user_uri) && state.is_playing {
-            state.missed_polls += 1;
-            if state.missed_polls > 2 {
-                let _ = db.finalize_play(
-                    user_uri,
-                    &state.track_uri,
-                    state.cycle_started_at_ms,
-                    now_ms,
-                    state.duration_ms,
-                    false,
-                );
-                if let Some(sid) = state.session_id.take() {
-                    let _ = db.end_session(sid, now_ms);
+    Ok(user_uri)
+}
+
+fn log_poll_activities_to_db(
+    db_path: &Path,
+    activities: &[FriendActivity],
+    active_plays: &mut HashMap<String, ActivePlay>,
+    now_ms: i64,
+    grace_ms: i64,
+    check_missed_polls: bool,
+) -> Result<()> {
+    let db = Database::open(db_path)?;
+    let mut seen_users: HashSet<String> = HashSet::new();
+
+    for item in activities {
+        let user_uri = process_single_db_activity(&db, item, active_plays, now_ms, grace_ms)?;
+        seen_users.insert(user_uri);
+    }
+
+    if check_missed_polls {
+        for (user_uri, state) in active_plays.iter_mut() {
+            if !seen_users.contains(user_uri) && state.is_playing {
+                state.missed_polls += 1;
+                if state.missed_polls > 2 {
+                    let _ = db.finalize_play(
+                        user_uri,
+                        &state.track_uri,
+                        state.cycle_started_at_ms,
+                        now_ms,
+                        state.duration_ms,
+                        false,
+                    );
+                    if let Some(sid) = state.session_id.take() {
+                        let _ = db.end_session(sid, now_ms);
+                    }
+                    state.is_playing = false;
                 }
-                state.is_playing = false;
             }
         }
     }
 
     Ok(())
+}
+
+async fn log_activities_with_state(
+    db_path: &Path,
+    activities: Vec<FriendActivity>,
+    active_plays: &mut HashMap<String, ActivePlay>,
+    now_ms: i64,
+    grace_ms: i64,
+    check_missed_polls: bool,
+) {
+    if activities.is_empty() && !check_missed_polls {
+        return;
+    }
+    let db_path_clone = db_path.to_path_buf();
+    let mut plays_for_task = std::mem::take(active_plays);
+    let log_res = tokio::task::spawn_blocking(move || {
+        let res = log_poll_activities_to_db(
+            &db_path_clone,
+            &activities,
+            &mut plays_for_task,
+            now_ms,
+            grace_ms,
+            check_missed_polls,
+        );
+        (plays_for_task, res)
+    })
+    .await;
+    match log_res {
+        Ok((returned_plays, Ok(()))) => {
+            *active_plays = returned_plays;
+        }
+        Ok((returned_plays, Err(err))) => {
+            *active_plays = returned_plays;
+            eprintln!("[warn] Failed to log live listens to SQLite: {err:#}");
+        }
+        Err(err) => {
+            eprintln!("[warn] Live DB logging task panicked: {err}");
+        }
+    }
 }
 
 async fn close_open_sessions(db_path: &Path, active_plays: &mut HashMap<String, ActivePlay>) {
@@ -1266,11 +1333,82 @@ async fn close_open_sessions(db_path: &Path, active_plays: &mut HashMap<String, 
     .await;
 }
 
-fn spawn_live_poller(
+fn build_sorted_live_friends(
+    friends_map: &HashMap<String, FriendActivity>,
+    account_uri: Option<&str>,
+) -> Vec<LiveFriendItem> {
+    let mut friends: Vec<LiveFriendItem> = friends_map
+        .values()
+        .map(|a| {
+            let mut item = LiveFriendItem::from(a);
+            item.is_self =
+                account_uri.is_some_and(|u| item.user_uri.eq_ignore_ascii_case(u));
+            item
+        })
+        .collect();
+    sort_live_friends(&mut friends);
+    friends
+}
+
+fn format_transport_banner(transport: TransportPreference, poll_interval_secs: u64) -> String {
+    match transport {
+        TransportPreference::Auto => {
+            format!("auto (realtime push -> {poll_interval_secs}s poll fallback)")
+        }
+        TransportPreference::Dealer => {
+            format!("dealer (Dealer WS push -> {poll_interval_secs}s poll fallback)")
+        }
+        TransportPreference::Mercury => {
+            format!("mercury (Mercury push -> {poll_interval_secs}s poll fallback)")
+        }
+        TransportPreference::Poll => format!("poll ({poll_interval_secs}s HTTP polling)"),
+    }
+}
+
+async fn wait_own_update(rx: &mut Option<watch::Receiver<u64>>) -> bool {
+    match rx {
+        Some(r) => r.changed().await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
+async fn prepare_own_activity(
+    own_observer: Option<&OwnPlaybackObserver>,
+    own_session: Option<&librespot_core::session::Session>,
+    own_name_cache: &mut NameCache,
+    account_uri: Option<&str>,
+    active_plays: &HashMap<String, ActivePlay>,
+    db_path: &Path,
+) -> Option<FriendActivity> {
+    let mut own_activity = own_observer?.latest()?;
+    if let Some(session) = own_session {
+        enrich_activity(session, &mut own_activity, own_name_cache).await;
+    }
+    if let Some(own_uri) = account_uri
+        && let Some(prev) = active_plays.get(own_uri)
+        && prev.track_uri == own_activity.track.uri
+        && (own_activity.timestamp - prev.cycle_started_at_ms).abs() <= 20_000
+    {
+        own_activity.timestamp = prev.cycle_started_at_ms;
+    }
+    let db_path_clone = db_path.to_path_buf();
+    let enriched = tokio::task::spawn_blocking(move || {
+        enrich_own_context_from_db(&db_path_clone, &mut own_activity);
+        own_activity
+    })
+    .await
+    .ok()?;
+    Some(enriched)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_live_stream(
     live: Arc<LiveHub>,
     cache_dir: PathBuf,
     db_path: PathBuf,
     poll_interval_secs: u64,
+    transport_pref: TransportPreference,
+    debug_push: bool,
     log_to_db: bool,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -1278,11 +1416,10 @@ fn spawn_live_poller(
     let grace_ms = ((interval_secs as i64) * 1000).max(25_000);
 
     tokio::spawn(async move {
-        let mut name_cache = NameCache::default();
+        let mut own_name_cache = NameCache::default();
         let mut active_plays: HashMap<String, ActivePlay> = HashMap::new();
         let mut known_friend_uris: BTreeSet<String> = BTreeSet::new();
         let mut last_profile_sync: Option<Instant> = None;
-        let mut connect_errors: u32 = 0;
 
         loop {
             if *shutdown_rx.borrow() {
@@ -1302,7 +1439,6 @@ fn spawn_live_poller(
                     .unwrap_or(false);
 
             if !has_credentials {
-                connect_errors = 0;
                 close_open_sessions(&db_path, &mut active_plays).await;
                 active_plays.clear();
                 live.set_account_profile(None).await;
@@ -1311,6 +1447,7 @@ fn spawn_live_poller(
                     live.publish(LiveSnapshot {
                         connected: false,
                         status: "unauthenticated".to_string(),
+                        transport: None,
                         message: Some(
                             "Connect your Spotify account to enable live activity".to_string(),
                         ),
@@ -1333,85 +1470,46 @@ fn spawn_live_poller(
                 continue;
             }
 
-            let session = match connect_cached(&cache_dir).await {
-                Ok(session) => {
-                    connect_errors = 0;
-                    session
-                }
+            let own_session = match connect_cached(&cache_dir).await {
+                Ok(session) => Some(session),
                 Err(err) => {
                     let err_msg = format!("{err:#}");
                     if err_msg.contains("No cached Spotify credentials") {
-                        live.set_account_profile(None).await;
-                        live.publish(LiveSnapshot {
-                            connected: false,
-                            status: "unauthenticated".to_string(),
-                            message: Some(
-                                "Connect your Spotify account to enable live activity".to_string(),
-                            ),
-                            account: None,
-                            account_uri: None,
-                            account_profile: None,
-                            updated_at_ms: Some(Utc::now().timestamp_millis()),
-                            poll_interval_secs: interval_secs,
-                            friends: Vec::new(),
-                        })
-                        .await;
-                        tokio::select! {
-                            _ = live.auth_notify.notified() => {}
-                            _ = shutdown_rx.changed() => {
-                                return;
-                            }
-                        }
                         continue;
                     }
-
-                    connect_errors = connect_errors.saturating_add(1);
-                    eprintln!("[warn] Live feed connect failed (#{connect_errors}): {err_msg}");
-                    let prev = live.snapshot().await;
-                    live.publish(LiveSnapshot {
-                        connected: false,
-                        status: "error".to_string(),
-                        message: Some(format!("Connection failed: {err_msg}")),
-                        account: prev.account,
-                        account_uri: prev.account_uri,
-                        account_profile: prev.account_profile,
-                        updated_at_ms: prev.updated_at_ms,
-                        poll_interval_secs: interval_secs,
-                        friends: prev.friends,
-                    })
-                    .await;
-
-                    let backoff_secs = (5u64 * (1u64 << connect_errors.min(5))).min(300);
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
-                        _ = live.refresh_notify.notified() => {}
-                        _ = live.auth_notify.notified() => {}
-                        _ = shutdown_rx.changed() => {
-                            return;
-                        }
-                    }
-                    continue;
-                }
-            };
-
-            let account = {
-                let username = session.username();
-                if username.is_empty() {
+                    eprintln!("[warn] Own playback observer session connect failed: {err_msg}");
                     None
-                } else {
-                    Some(username)
                 }
             };
-            let account_uri = account.as_ref().map(|u| format!("spotify:user:{u}"));
+
+            let mut current_account: Option<String> = own_session
+                .as_ref()
+                .map(|s| s.username())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    open_cache(&cache_dir)
+                        .ok()
+                        .and_then(|cache| cache.credentials())
+                        .and_then(|creds| creds.username)
+                        .filter(|s| !s.is_empty())
+                });
+            let mut account_uri = current_account
+                .as_ref()
+                .map(|u| format!("spotify:user:{u}"));
             if let Some(uri) = &account_uri {
                 known_friend_uris.insert(uri.clone());
             }
 
             let mut account_profile: Option<AccountProfile> = if let (Some(username), Some(own_uri)) =
-                (&account, &account_uri)
+                (&current_account, &account_uri)
             {
-                match fetch_user_profile(&session, own_uri).await {
-                    Ok(snap) => {
+                let fetched = if let Some(session) = own_session.as_ref() {
+                    fetch_user_profile(session, own_uri).await.ok()
+                } else {
+                    None
+                };
+                match fetched {
+                    Some(snap) => {
                         let display_name = if snap.user_name.trim().is_empty() {
                             username.clone()
                         } else {
@@ -1433,7 +1531,7 @@ fn spawn_live_poller(
                             image_url,
                         })
                     }
-                    Err(_) => {
+                    None => {
                         let db_path_clone = db_path.clone();
                         let own_uri_clone = own_uri.clone();
                         let stored = tokio::task::spawn_blocking(move || -> Option<StoredProfile> {
@@ -1471,233 +1569,65 @@ fn spawn_live_poller(
 
             live.set_account_profile(account_profile.clone()).await;
 
-            let (own_name, own_image) = match &account_profile {
-                Some(p) => (p.display_name.clone(), p.image_url.clone()),
-                None => (session.username(), None),
-            };
-            let own_observer = OwnPlaybackObserver::spawn(session.clone(), own_name, own_image);
+            let mut own_observer: Option<OwnPlaybackObserver> = None;
+            let mut own_updates_rx: Option<watch::Receiver<u64>> = None;
+            if let Some(session) = own_session.as_ref() {
+                let (own_name, own_image) = match &account_profile {
+                    Some(p) => (p.display_name.clone(), p.image_url.clone()),
+                    None => (session.username(), None),
+                };
+                let obs = OwnPlaybackObserver::spawn(session.clone(), own_name, own_image);
+                own_updates_rx = Some(obs.subscribe_updates());
+                own_observer = Some(obs);
+            }
 
-            let mut consecutive_errors: u32 = 0;
+            let mut friends_map: HashMap<String, FriendActivity> = HashMap::new();
+            let mut current_transport: Option<String> = None;
+
+            let (stream_shutdown_tx, stream_shutdown_rx) = watch::channel(false);
+            let stream_config = StreamConfig {
+                poll_interval_secs: interval_secs,
+                resync_interval_secs: DEFAULT_RESYNC_INTERVAL_SECS,
+                transport: transport_pref,
+                debug_push,
+            };
+
+            let (mut event_rx, stream_handle) = spawn_activity_stream(
+                cache_dir.clone(),
+                stream_config,
+                Arc::clone(&live.refresh_notify),
+                stream_shutdown_rx,
+            );
 
             loop {
                 if *shutdown_rx.borrow() {
+                    let _ = stream_shutdown_tx.send(true);
+                    let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
                     close_open_sessions(&db_path, &mut active_plays).await;
-                    own_observer.shutdown().await;
-                    session.shutdown();
+                    if let Some(obs) = own_observer.take() {
+                        obs.shutdown().await;
+                    }
+                    if let Some(session) = own_session {
+                        session.shutdown();
+                    }
                     return;
                 }
 
-                let cache_dir_check = cache_dir.clone();
-                let still_authenticated =
-                    tokio::task::spawn_blocking(move || has_cached_credentials(&cache_dir_check))
-                        .await
-                        .unwrap_or(true);
-                if !still_authenticated {
-                    close_open_sessions(&db_path, &mut active_plays).await;
-                    active_plays.clear();
-                    own_observer.shutdown().await;
-                    session.shutdown();
-                    break;
-                }
-
-                if session.is_invalid() {
-                    own_observer.shutdown().await;
-                    let prev = live.snapshot().await;
-                    live.publish(LiveSnapshot {
-                        connected: false,
-                        status: "connecting".to_string(),
-                        message: Some("Reconnecting to Spotify...".to_string()),
-                        account: account.clone(),
-                        account_uri: account_uri.clone(),
-                        account_profile: account_profile.clone(),
-                        updated_at_ms: prev.updated_at_ms,
-                        poll_interval_secs: interval_secs,
-                        friends: prev.friends,
-                    })
-                    .await;
-                    break;
-                }
-
-                match fetch_buddylist(&session, &mut name_cache).await {
-                    Ok(mut activities) => {
-                        consecutive_errors = 0;
-                        let now_ms = Utc::now().timestamp_millis();
-
-                        if let Some(mut own_activity) = own_observer.latest() {
-                            enrich_activity(&session, &mut own_activity, &mut name_cache).await;
-                            if let Some(own_uri) = &account_uri
-                                && let Some(prev) = active_plays.get(own_uri)
-                                && prev.track_uri == own_activity.track.uri
-                                && (own_activity.timestamp - prev.cycle_started_at_ms).abs()
-                                    <= 20_000
-                            {
-                                own_activity.timestamp = prev.cycle_started_at_ms;
-                            }
-                            let db_path_clone = db_path.clone();
-                            own_activity = tokio::task::spawn_blocking(move || {
-                                enrich_own_context_from_db(&db_path_clone, &mut own_activity);
-                                own_activity
-                            })
-                            .await
-                            .unwrap_or_else(|_| {
-                                unreachable!("enrich_own_context_from_db panicked")
-                            });
-                            activities.retain(|a| {
-                                !a.user.uri.eq_ignore_ascii_case(&own_activity.user.uri)
-                            });
-                            activities.push(own_activity);
-                        }
-
-                        for item in &activities {
-                            known_friend_uris.insert(item.user.uri.clone());
-                        }
-
-                        if log_to_db {
-                            let db_path_clone = db_path.clone();
-                            let activities_to_log = activities.clone();
-                            let mut plays_for_task = std::mem::take(&mut active_plays);
-                            let log_res = tokio::task::spawn_blocking(move || {
-                                let res = log_poll_activities_to_db(
-                                    &db_path_clone,
-                                    &activities_to_log,
-                                    &mut plays_for_task,
-                                    now_ms,
-                                    grace_ms,
-                                );
-                                (plays_for_task, res)
-                            })
-                            .await;
-                            match log_res {
-                                Ok((returned_plays, Ok(()))) => {
-                                    active_plays = returned_plays;
-                                }
-                                Ok((returned_plays, Err(err))) => {
-                                    active_plays = returned_plays;
-                                    eprintln!("[warn] Failed to log live listens to SQLite: {err:#}");
-                                }
-                                Err(err) => {
-                                    eprintln!("[warn] Live DB logging task panicked: {err}");
-                                }
-                            }
-                        }
-
-                        let mut friends: Vec<LiveFriendItem> = activities
-                            .iter()
-                            .map(|a| {
-                                let mut item = LiveFriendItem::from(a);
-                                item.is_self = account_uri
-                                    .as_deref()
-                                    .is_some_and(|u| item.user_uri.eq_ignore_ascii_case(u));
-                                item
-                            })
-                            .collect();
-                        sort_live_friends(&mut friends);
-
-                        live.publish(LiveSnapshot {
-                            connected: true,
-                            status: "live".to_string(),
-                            message: None,
-                            account: account.clone(),
-                            account_uri: account_uri.clone(),
-                            account_profile: account_profile.clone(),
-                            updated_at_ms: Some(now_ms),
-                            poll_interval_secs: interval_secs,
-                            friends,
-                        })
-                        .await;
-
-                        // Periodic profile sync (every 30 min) when logging to SQLite
-                        if log_to_db
-                            && !known_friend_uris.is_empty()
-                            && last_profile_sync
-                                .is_none_or(|t| t.elapsed() >= PROFILE_SYNC_INTERVAL)
-                        {
-                            let uris_to_sync: Vec<String> =
-                                known_friend_uris.iter().cloned().collect();
-                            for uri in uris_to_sync {
-                                if *shutdown_rx.borrow() {
-                                    break;
-                                }
-                                if let Ok(snap) = fetch_user_profile(&session, &uri).await {
-                                    if account_uri
-                                        .as_deref()
-                                        .is_some_and(|own| own.eq_ignore_ascii_case(&uri))
-                                        && let Some(username) = &account
-                                    {
-                                        let display_name = if snap.user_name.trim().is_empty() {
-                                            username.clone()
-                                        } else {
-                                            snap.user_name.clone()
-                                        };
-                                        let updated = AccountProfile {
-                                            user_uri: uri.clone(),
-                                            username: username.clone(),
-                                            display_name: display_name.clone(),
-                                            image_url: snap.image_url.clone(),
-                                        };
-                                        own_observer
-                                            .update_profile(display_name, snap.image_url.clone());
-                                        account_profile = Some(updated.clone());
-                                        live.set_account_profile(Some(updated)).await;
-                                    }
-                                    let db_path_clone = db_path.clone();
-                                    let _ = tokio::task::spawn_blocking(move || -> Result<()> {
-                                        let db = Database::open(&db_path_clone)?;
-                                        let _ = db.upsert_profile(&snap)?;
-                                        Ok(())
-                                    })
-                                    .await;
-                                }
-                            }
-                            last_profile_sync = Some(Instant::now());
-                        }
-                    }
-                    Err(err) => {
-                        consecutive_errors = consecutive_errors.saturating_add(1);
-                        let err_msg = format!("{err:#}");
-                        eprintln!("[warn] Live feed poll failed (#{consecutive_errors}): {err_msg}");
-
-                        let prev = live.snapshot().await;
-                        live.publish(LiveSnapshot {
-                            connected: false,
-                            status: "error".to_string(),
-                            message: Some(format!("Poll failed: {err_msg}")),
-                            account: account.clone(),
-                            account_uri: account_uri.clone(),
-                            account_profile: account_profile.clone(),
-                            updated_at_ms: prev.updated_at_ms,
-                            poll_interval_secs: interval_secs,
-                            friends: prev.friends,
-                        })
-                        .await;
-
-                        if consecutive_errors >= 3 {
-                            own_observer.shutdown().await;
-                            session.shutdown();
-                            let backoff_secs = (interval_secs * 2).min(120);
-                            tokio::select! {
-                                _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {}
-                                _ = live.refresh_notify.notified() => {}
-                                _ = live.auth_notify.notified() => {}
-                                _ = shutdown_rx.changed() => {
-                                    close_open_sessions(&db_path, &mut active_plays).await;
-                                    return;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                let wait_secs = if consecutive_errors > 0 {
-                    (interval_secs * (1u64 << consecutive_errors.min(4))).min(300)
-                } else {
-                    interval_secs
-                };
-
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => {}
-                    _ = live.refresh_notify.notified() => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            let _ = stream_shutdown_tx.send(true);
+                            let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                            close_open_sessions(&db_path, &mut active_plays).await;
+                            if let Some(obs) = own_observer.take() {
+                                obs.shutdown().await;
+                            }
+                            if let Some(session) = own_session {
+                                session.shutdown();
+                            }
+                            return;
+                        }
+                    }
                     _ = live.auth_notify.notified() => {
                         let cache_dir_check = cache_dir.clone();
                         let still_auth = tokio::task::spawn_blocking(move || {
@@ -1706,18 +1636,301 @@ fn spawn_live_poller(
                         .await
                         .unwrap_or(true);
                         if !still_auth {
+                            let _ = stream_shutdown_tx.send(true);
+                            let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
                             close_open_sessions(&db_path, &mut active_plays).await;
                             active_plays.clear();
-                            own_observer.shutdown().await;
-                            session.shutdown();
+                            if let Some(obs) = own_observer.take() {
+                                obs.shutdown().await;
+                            }
+                            if let Some(session) = own_session {
+                                session.shutdown();
+                            }
                             break;
                         }
                     }
-                    _ = shutdown_rx.changed() => {
-                        close_open_sessions(&db_path, &mut active_plays).await;
-                        own_observer.shutdown().await;
-                        session.shutdown();
-                        return;
+                    updated = wait_own_update(&mut own_updates_rx) => {
+                        if !updated {
+                            own_updates_rx = None;
+                        } else if let Some(own_activity) = prepare_own_activity(
+                            own_observer.as_ref(),
+                            own_session.as_ref(),
+                            &mut own_name_cache,
+                            account_uri.as_deref(),
+                            &active_plays,
+                            &db_path,
+                        )
+                        .await
+                        {
+                            let now_ms = Utc::now().timestamp_millis();
+                            known_friend_uris.insert(own_activity.user.uri.clone());
+                            friends_map.insert(own_activity.user.uri.clone(), own_activity.clone());
+
+                            if log_to_db {
+                                log_activities_with_state(
+                                    &db_path,
+                                    vec![own_activity],
+                                    &mut active_plays,
+                                    now_ms,
+                                    grace_ms,
+                                    false,
+                                )
+                                .await;
+                            }
+
+                            let prev = live.snapshot().await;
+                            if prev.connected && prev.status == "live" {
+                                let sorted =
+                                    build_sorted_live_friends(&friends_map, account_uri.as_deref());
+                                live.publish(LiveSnapshot {
+                                    connected: true,
+                                    status: "live".to_string(),
+                                    transport: current_transport.clone().or(prev.transport),
+                                    message: None,
+                                    account: current_account.clone(),
+                                    account_uri: account_uri.clone(),
+                                    account_profile: account_profile.clone(),
+                                    updated_at_ms: Some(now_ms),
+                                    poll_interval_secs: interval_secs,
+                                    friends: sorted,
+                                })
+                                .await;
+                            }
+                        }
+                    }
+                    ev = event_rx.recv() => {
+                        let Some(event) = ev else {
+                            let _ = stream_shutdown_tx.send(true);
+                            let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                            if let Some(obs) = own_observer.take() {
+                                obs.shutdown().await;
+                            }
+                            if let Some(session) = own_session {
+                                session.shutdown();
+                            }
+                            break;
+                        };
+
+                        match event {
+                            ActivityEvent::SessionReconnected { account } => {
+                                if let Some(acc) = account {
+                                    account_uri = Some(format!("spotify:user:{acc}"));
+                                    current_account = Some(acc);
+                                }
+                            }
+                            ActivityEvent::TransportChanged { mode, .. } => {
+                                current_transport = Some(mode.as_str().to_string());
+                                let prev = live.snapshot().await;
+                                if prev.connected && prev.status == "live" {
+                                    live.publish(LiveSnapshot {
+                                        transport: current_transport.clone(),
+                                        ..prev
+                                    })
+                                    .await;
+                                }
+                            }
+                            ActivityEvent::FullSnapshot { mut friends, transport } => {
+                                let now_ms = Utc::now().timestamp_millis();
+                                current_transport = Some(transport.as_str().to_string());
+
+                                if let Some(own_activity) = prepare_own_activity(
+                                    own_observer.as_ref(),
+                                    own_session.as_ref(),
+                                    &mut own_name_cache,
+                                    account_uri.as_deref(),
+                                    &active_plays,
+                                    &db_path,
+                                )
+                                .await
+                                {
+                                    friends.retain(|a| {
+                                        !a.user.uri.eq_ignore_ascii_case(&own_activity.user.uri)
+                                    });
+                                    friends.push(own_activity);
+                                }
+
+                                friends_map.clear();
+                                for item in &friends {
+                                    known_friend_uris.insert(item.user.uri.clone());
+                                    friends_map.insert(item.user.uri.clone(), item.clone());
+                                }
+
+                                if log_to_db {
+                                    log_activities_with_state(
+                                        &db_path,
+                                        friends,
+                                        &mut active_plays,
+                                        now_ms,
+                                        grace_ms,
+                                        true,
+                                    )
+                                    .await;
+                                }
+
+                                let sorted =
+                                    build_sorted_live_friends(&friends_map, account_uri.as_deref());
+                                live.publish(LiveSnapshot {
+                                    connected: true,
+                                    status: "live".to_string(),
+                                    transport: current_transport.clone(),
+                                    message: None,
+                                    account: current_account.clone(),
+                                    account_uri: account_uri.clone(),
+                                    account_profile: account_profile.clone(),
+                                    updated_at_ms: Some(now_ms),
+                                    poll_interval_secs: interval_secs,
+                                    friends: sorted,
+                                })
+                                .await;
+
+                                // Periodic profile sync (every 30 min) when logging to SQLite
+                                if log_to_db
+                                    && !known_friend_uris.is_empty()
+                                    && last_profile_sync
+                                        .is_none_or(|t| t.elapsed() >= PROFILE_SYNC_INTERVAL)
+                                    && let Some(session) = own_session.as_ref().filter(|s| !s.is_invalid())
+                                {
+                                    let uris_to_sync: Vec<String> =
+                                        known_friend_uris.iter().cloned().collect();
+                                    for uri in uris_to_sync {
+                                        if *shutdown_rx.borrow() {
+                                            break;
+                                        }
+                                        if let Ok(snap) = fetch_user_profile(session, &uri).await {
+                                            if account_uri
+                                                .as_deref()
+                                                .is_some_and(|own| own.eq_ignore_ascii_case(&uri))
+                                                && let Some(username) = &current_account
+                                            {
+                                                let display_name = if snap.user_name.trim().is_empty() {
+                                                    username.clone()
+                                                } else {
+                                                    snap.user_name.clone()
+                                                };
+                                                let updated = AccountProfile {
+                                                    user_uri: uri.clone(),
+                                                    username: username.clone(),
+                                                    display_name: display_name.clone(),
+                                                    image_url: snap.image_url.clone(),
+                                                };
+                                                if let Some(obs) = own_observer.as_ref() {
+                                                    obs.update_profile(
+                                                        display_name,
+                                                        snap.image_url.clone(),
+                                                    );
+                                                }
+                                                account_profile = Some(updated.clone());
+                                                live.set_account_profile(Some(updated)).await;
+                                            }
+                                            let db_path_clone = db_path.clone();
+                                            let _ = tokio::task::spawn_blocking(move || -> Result<()> {
+                                                let db = Database::open(&db_path_clone)?;
+                                                let _ = db.upsert_profile(&snap)?;
+                                                Ok(())
+                                            })
+                                            .await;
+                                        }
+                                    }
+                                    last_profile_sync = Some(Instant::now());
+                                }
+                            }
+                            ActivityEvent::FriendUpdated {
+                                activity,
+                                transport,
+                            } => {
+                                let now_ms = Utc::now().timestamp_millis();
+                                current_transport = Some(transport.as_str().to_string());
+                                known_friend_uris.insert(activity.user.uri.clone());
+                                friends_map.insert(activity.user.uri.clone(), activity.clone());
+
+                                if log_to_db {
+                                    log_activities_with_state(
+                                        &db_path,
+                                        vec![activity],
+                                        &mut active_plays,
+                                        now_ms,
+                                        grace_ms,
+                                        false,
+                                    )
+                                    .await;
+                                }
+
+                                let sorted =
+                                    build_sorted_live_friends(&friends_map, account_uri.as_deref());
+                                live.publish(LiveSnapshot {
+                                    connected: true,
+                                    status: "live".to_string(),
+                                    transport: current_transport.clone(),
+                                    message: None,
+                                    account: current_account.clone(),
+                                    account_uri: account_uri.clone(),
+                                    account_profile: account_profile.clone(),
+                                    updated_at_ms: Some(now_ms),
+                                    poll_interval_secs: interval_secs,
+                                    friends: sorted,
+                                })
+                                .await;
+                            }
+                            ActivityEvent::Error {
+                                message,
+                                consecutive_errors,
+                            } => {
+                                if message.contains("No cached Spotify credentials") {
+                                    let _ = stream_shutdown_tx.send(true);
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(2),
+                                        stream_handle,
+                                    )
+                                    .await;
+                                    close_open_sessions(&db_path, &mut active_plays).await;
+                                    active_plays.clear();
+                                    if let Some(obs) = own_observer.take() {
+                                        obs.shutdown().await;
+                                    }
+                                    if let Some(session) = own_session {
+                                        session.shutdown();
+                                    }
+                                    live.set_account_profile(None).await;
+                                    live.publish(LiveSnapshot {
+                                        connected: false,
+                                        status: "unauthenticated".to_string(),
+                                        transport: None,
+                                        message: Some(
+                                            "Connect your Spotify account to enable live activity"
+                                                .to_string(),
+                                        ),
+                                        account: None,
+                                        account_uri: None,
+                                        account_profile: None,
+                                        updated_at_ms: Some(Utc::now().timestamp_millis()),
+                                        poll_interval_secs: interval_secs,
+                                        friends: Vec::new(),
+                                    })
+                                    .await;
+                                    break;
+                                }
+
+                                eprintln!(
+                                    "[warn] Live feed stream error (#{consecutive_errors}): {message}"
+                                );
+                                let prev = live.snapshot().await;
+                                live.publish(LiveSnapshot {
+                                    connected: false,
+                                    status: "error".to_string(),
+                                    transport: prev.transport,
+                                    message: Some(format!("Stream error: {message}")),
+                                    account: prev.account.or_else(|| current_account.clone()),
+                                    account_uri: prev.account_uri.or_else(|| account_uri.clone()),
+                                    account_profile: prev
+                                        .account_profile
+                                        .or_else(|| account_profile.clone()),
+                                    updated_at_ms: prev.updated_at_ms,
+                                    poll_interval_secs: interval_secs,
+                                    friends: prev.friends,
+                                })
+                                .await;
+                            }
+                        }
                     }
                 }
             }
@@ -1788,12 +2001,14 @@ pub async fn start_embedded_server(config: UiConfig) -> anyhow::Result<EmbeddedS
     let live = Arc::new(LiveHub::new(poll_interval_secs, config.offline));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    let poller_handle = if !config.offline {
-        Some(spawn_live_poller(
+    let stream_handle = if !config.offline {
+        Some(spawn_live_stream(
             Arc::clone(&live),
             config.cache_dir.clone(),
             config.db_path.clone(),
             poll_interval_secs,
+            config.transport,
+            config.debug_push,
             config.log_to_db,
             shutdown_rx.clone(),
         ))
@@ -1818,7 +2033,7 @@ pub async fn start_embedded_server(config: UiConfig) -> anyhow::Result<EmbeddedS
             eprintln!("[error] Embedded web server exited with error: {err:#}");
         }
 
-        if let Some(handle) = poller_handle {
+        if let Some(handle) = stream_handle {
             let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
         }
     });
@@ -1834,6 +2049,7 @@ pub async fn run_server(config: UiConfig) -> Result<()> {
     let open_browser = config.open_browser;
     let offline = config.offline;
     let log_to_db = config.log_to_db;
+    let transport = config.transport;
     let poll_interval_secs = config.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
 
     let handle = start_embedded_server(config).await?;
@@ -1852,7 +2068,8 @@ pub async fn run_server(config: UiConfig) -> Result<()> {
         println!("Mode: offline archive only");
     } else {
         println!(
-            "Mode: live feed every {poll_interval_secs}s (SQLite logging: {})",
+            "Mode: {} (SQLite logging: {})",
+            format_transport_banner(transport, poll_interval_secs),
             if log_to_db { "on" } else { "off" }
         );
     }
@@ -1907,7 +2124,7 @@ mod tests {
 
     use crate::spotify::{
         FriendActivity, FriendTrack, FriendUser, NamedUri, PublicPlaylist, TrackContext,
-        UserProfileSnapshot,
+        TransportMode, UserProfileSnapshot,
     };
 
     fn make_temp_db_path(label: &str) -> PathBuf {
@@ -2200,6 +2417,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(snap["connected"], false);
         assert_eq!(snap["status"], "offline");
+        assert_eq!(snap["transport"], "offline");
         assert_eq!(snap["message"], "Running in offline archive mode");
         assert!(snap["account"].is_null());
         assert!(snap["updated_at_ms"].is_null());
@@ -2211,6 +2429,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(refreshed["connected"], false);
         assert_eq!(refreshed["status"], "offline");
+        assert_eq!(refreshed["transport"], "offline");
         assert_eq!(refreshed["message"], "Running in offline archive mode");
 
         // Publish a live snapshot with mixed playing/paused items and verify sorting + JSON keys
@@ -2300,6 +2519,7 @@ mod tests {
         live.publish(LiveSnapshot {
             connected: true,
             status: "live".to_string(),
+            transport: Some(TransportMode::DealerPush.as_str().to_string()),
             message: None,
             account: Some("tester".to_string()),
             account_uri: Some("spotify:user:tester".to_string()),
@@ -2319,6 +2539,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(live_json["connected"], true);
         assert_eq!(live_json["status"], "live");
+        assert_eq!(live_json["transport"], "dealer_push");
         assert_eq!(live_json["account"], "tester");
         assert_eq!(live_json["account_uri"], "spotify:user:tester");
         assert_eq!(live_json["account_profile"]["display_name"], "Tester");
@@ -2382,6 +2603,28 @@ mod tests {
         let chunk_text = String::from_utf8(first_chunk.to_vec()).expect("utf8");
         assert!(chunk_text.contains("event: snapshot"));
         assert!(chunk_text.contains("\"status\":\"live\""));
+        assert!(chunk_text.contains("\"transport\":\"dealer_push\""));
+
+        // Verify connecting LiveHub starts with null transport and accepts transport flips
+        let connecting_hub = Arc::new(LiveHub::new(15, false));
+        let connecting_app = build_router(db_path.clone(), Arc::clone(&connecting_hub));
+        let (status, conn_json) = get_json(&connecting_app, "/api/live").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(conn_json["status"], "connecting");
+        assert!(conn_json["transport"].is_null());
+
+        let _cfg_check = UiConfig {
+            cache_dir: db_path.clone(),
+            db_path: db_path.clone(),
+            host: "127.0.0.1".to_string(),
+            port: 8787,
+            open_browser: false,
+            poll_interval_secs: 15,
+            offline: true,
+            log_to_db: false,
+            transport: TransportPreference::Auto,
+            debug_push: false,
+        };
 
         let _ = std::fs::remove_file(&db_path);
     }
@@ -2441,6 +2684,8 @@ mod tests {
             poll_interval_secs: 15,
             offline: false,
             log_to_db: true,
+            transport: TransportPreference::Auto,
+            debug_push: false,
         })
         .await
         .expect("start embedded server");

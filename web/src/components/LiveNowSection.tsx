@@ -32,6 +32,102 @@ export interface LiveNowSectionProps {
   onFilterByUser?: (userUri: string) => void;
 }
 
+interface TransportBadgeInfo {
+  label: string;
+  shortLabel: string;
+  tone: 'sage' | 'amber' | 'muted';
+  isPush: boolean;
+  tooltip: string;
+  hasExplicitTransport: boolean;
+}
+
+export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBadgeInfo {
+  if (!snapshot) {
+    return {
+      label: 'OFFLINE',
+      shortLabel: 'OFFLINE',
+      tone: 'muted',
+      isPush: false,
+      tooltip: 'Realtime transport is offline',
+      hasExplicitTransport: false,
+    };
+  }
+
+  const transport = snapshot.transport?.trim();
+  switch (transport) {
+    case 'dealer_push':
+      return {
+        label: 'WS DEALER · REALTIME',
+        shortLabel: 'WS PUSH',
+        tone: 'sage',
+        isPush: true,
+        tooltip: 'Sub-second Spotify Dealer WebSocket push (with automatic fallback)',
+        hasExplicitTransport: true,
+      };
+    case 'mercury_push':
+      return {
+        label: 'MERCURY · REALTIME',
+        shortLabel: 'MERCURY PUSH',
+        tone: 'sage',
+        isPush: true,
+        tooltip: 'Spotify Mercury pub/sub push (with automatic HTTP polling fallback)',
+        hasExplicitTransport: true,
+      };
+    case 'http_polling': {
+      const hasInterval = snapshot.poll_interval_secs > 0;
+      return {
+        label: hasInterval
+          ? `HTTP POLL · ${snapshot.poll_interval_secs}S FALLBACK`
+          : 'HTTP POLL FALLBACK',
+        shortLabel: hasInterval ? `POLL ${snapshot.poll_interval_secs}S` : 'POLL',
+        tone: 'amber',
+        isPush: false,
+        tooltip: 'Automatic HTTP polling fallback',
+        hasExplicitTransport: true,
+      };
+    }
+    case 'offline':
+      return {
+        label: 'OFFLINE',
+        shortLabel: 'OFFLINE',
+        tone: 'muted',
+        isPush: false,
+        tooltip: 'Realtime transport is offline',
+        hasExplicitTransport: false,
+      };
+    default:
+      if (transport) {
+        const normalized = transport.toUpperCase();
+        return {
+          label: normalized,
+          shortLabel: normalized,
+          tone: 'muted',
+          isPush: false,
+          tooltip: `Realtime transport: ${transport}`,
+          hasExplicitTransport: true,
+        };
+      }
+      if (snapshot.poll_interval_secs) {
+        return {
+          label: `${snapshot.poll_interval_secs}S SSE STREAM`,
+          shortLabel: `${snapshot.poll_interval_secs}S SSE`,
+          tone: 'muted',
+          isPush: false,
+          tooltip: 'Server-Sent Events live stream',
+          hasExplicitTransport: false,
+        };
+      }
+      return {
+        label: 'OFFLINE',
+        shortLabel: 'OFFLINE',
+        tone: 'muted',
+        isPush: false,
+        tooltip: 'Realtime transport is offline',
+        hasExplicitTransport: false,
+      };
+  }
+}
+
 function formatContextTag(item: LiveFriendItem): string {
   const base =
     item.context_name ||
@@ -169,6 +265,8 @@ export function LiveNowSection({
   const totalSpinningCount = allFriends.filter((f) => f.playing).length;
 
   const banner = getStatusBanner(snapshot, loading);
+  const isLive = Boolean(snapshot?.connected && snapshot?.status === 'live');
+  const transport = formatTransportBadge(snapshot);
   const lastSyncLabel = snapshot?.updated_at_ms
     ? formatRelativeTime(snapshot.updated_at_ms)
     : 'Awaiting sync';
@@ -254,6 +352,21 @@ export function LiveNowSection({
                 Filtered ({visibleFriends.length}/{allFriends.length})
               </Badge>
             )}
+            {isLive && transport.hasExplicitTransport && (
+              <Badge
+                variant={
+                  transport.tone === 'sage'
+                    ? 'default'
+                    : transport.tone === 'amber'
+                      ? 'warning'
+                      : 'outline'
+                }
+                title={transport.tooltip}
+                className="text-[9px] leading-none"
+              >
+                {transport.shortLabel}
+              </Badge>
+            )}
             {snapshot?.updated_at_ms && (
               <span className="hidden font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)] sm:inline">
                 &middot; Synced {lastSyncLabel}
@@ -270,7 +383,7 @@ export function LiveNowSection({
               className="h-6 px-2 text-[10px]"
             >
               <RefreshCw className={cn('h-3 w-3', polling && 'animate-spin')} />
-              Poll
+              {isLive && transport.isPush ? 'Sync' : 'Poll'}
             </Button>
             {onOpenFull && (
               <Button
@@ -471,13 +584,25 @@ export function LiveNowSection({
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-right font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
             <div>Synced {lastSyncLabel}</div>
-            {snapshot?.poll_interval_secs ? (
+            {isLive && transport.hasExplicitTransport ? (
+              <div
+                title={transport.tooltip}
+                className={cn(
+                  transport.tone === 'sage' && 'text-[var(--accent-primary)]',
+                  transport.tone === 'amber' && 'text-[var(--warning)]',
+                )}
+              >
+                {transport.label}
+              </div>
+            ) : snapshot?.transport?.trim() === 'offline' ? (
+              <div title={transport.tooltip}>{transport.label}</div>
+            ) : snapshot?.poll_interval_secs ? (
               <div>SSE &middot; {snapshot.poll_interval_secs}s poll</div>
             ) : null}
           </div>
           <Button variant="primary" size="md" onClick={pollNow} disabled={polling}>
             <RefreshCw className={cn('h-3.5 w-3.5', polling && 'animate-spin')} />
-            Poll Now
+            {isLive && transport.isPush ? 'Sync Now' : 'Poll Now'}
           </Button>
         </div>
       </div>

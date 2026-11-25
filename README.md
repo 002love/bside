@@ -11,7 +11,7 @@ The flip side of Spotify — a lightweight, single-binary Rust CLI & embedded lo
 
 ## Highlights
 
-- **Zero-cookie OAuth via `librespot`** — authenticates once in your browser, caches reusable credentials locally, and queries Spotify's live `/listening-activity/v1/feed` directly through `spclient`.
+- **Zero-cookie OAuth via `librespot`** — authenticates once in your browser, caches reusable credentials locally, and streams Friend Activity in realtime over Spotify's Dealer WebSocket / Mercury push channels with automatic fallback to `spclient` HTTP polling.
 - **Full track & podcast metadata** — resolves batched protobuf metadata (`TRACK_V4` & `EPISODE_V4`) for all artists, duration, popularity, explicit flag, release date, album/show info, ISRC, cover art, and playback source context.
 - **Sessions, skips & repeat loops** — tracks live `isPlaying` transitions to separate skips from full plays, measure real listening time, and infer consecutive loops when a track plays continuously past its duration.
 - **Hidden playlist reconstruction** — captures playback contexts including **Liked Songs** (`:collection`) and inaccessible private playlists, then rebuilds observed tracklists into a table, paste-ready Spotify URLs, `.m3u8`, CSV, or JSON.
@@ -66,9 +66,9 @@ Credentials and the SQLite database live in your OS data directory by default (`
 | --- | --- |
 | `bside login` | One-time browser OAuth via `librespot` (`--no-browser` for headless/VPS) |
 | `bside friends` | Live Friend Activity snapshot (`--friend`, `--raw`) |
-| `bside watch` | Foreground logger with skip/repeat/session tracking & profile sync |
+| `bside watch` | Foreground logger with realtime Dealer/Mercury push (+ polling fallback), skip/repeat/session tracking & profile sync (`--transport`, `--debug-push`) |
 | `bside service` | Background daemon (`install`, `start`, `stop`, `status`, `logs`, `uninstall`) |
-| `bside ui` | Launch the embedded local web dashboard with realtime SSE live feed (`--port 8787`, `--no-log`, `--offline`) |
+| `bside ui` | Launch the embedded local web dashboard with realtime SSE live feed (`--port 8787`, `--transport`, `--debug-push`, `--no-log`, `--offline`) |
 | `bside profiles` | View or refresh (`--refresh`) friend profiles, followers & public playlists |
 | `bside changes` | Chronological audit log of profile, follower & playlist changes |
 | `bside contexts` | List all discovered contexts (`--private-only` for Liked Songs & private playlists) |
@@ -81,8 +81,12 @@ Credentials and the SQLite database live in your OS data directory by default (`
 ### Examples
 
 ```bash
-# Run in foreground every 15s (or narrow to specific friends with --friend)
+# Run in foreground with automatic realtime push (Dealer WS -> Mercury -> 15s HTTP poll fallback)
 bside watch --interval 15
+
+# Override transport mode (auto, dealer, mercury, poll) or inspect raw push frames
+bside watch --transport dealer --debug-push
+bside watch --transport poll --interval 15
 
 # Manage background daemon
 bside service install --interval 15
@@ -91,6 +95,7 @@ bside service logs -n 50
 
 # Launch embedded local web UI (live feed + logging, or --no-log if `bside service` is running)
 bside ui --port 8787
+bside ui --transport auto
 bside ui --no-log
 bside ui --offline
 
@@ -128,7 +133,7 @@ bside changes --days 30
 
 ## Notes & Limitations
 
-- **Polling frequency**: `watch` defaults to 15 seconds (minimum enforced: 10s) with exponential backoff on transient or rate-limit errors. Avoid running multiple watchers on the same account.
+- **Realtime transport & polling fallback**: `watch` and `ui` default to `--transport auto`, which prefers Spotify's realtime Dealer WebSocket push, falls back to Mercury presence subscriptions, and finally falls back to `spclient` HTTP polling (`--interval` / `--poll-interval`, default 15s, minimum enforced 10s) with exponential backoff on transient or rate-limit errors. Use `--transport <auto|dealer|mercury|poll>` to pin a transport and `--debug-push` to log raw push frames to stderr. Avoid running multiple watchers on the same account.
 - **Visibility**: Only friends who have enabled **"Share my listening activity on Spotify"** appear in the feed — the same data visible in the official Spotify desktop app.
 - **Hidden playlist reconstruction**: Only tracks actually played while `bside watch` is running can be captured; unplayed tracks in private playlists or Liked Songs are never accessible.
 - **Unofficial API**: `bside` relies on `librespot` and Spotify's internal `spclient` endpoints, which are undocumented and may change without notice. Use responsibly.
