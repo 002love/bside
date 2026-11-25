@@ -233,9 +233,12 @@ export interface LiveFriendItem {
   spotify_url: string;
 }
 
+export type LiveTransportMode = 'dealer_push' | 'mercury_push' | 'http_polling' | 'offline';
+
 export interface LiveSnapshot {
   connected: boolean;
   status: string; // "live" | "connecting" | "offline" | "unauthenticated" | "error"
+  transport?: LiveTransportMode | string | null;
   message: string | null;
   account: string | null;
   account_uri?: string | null;
