@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Search, Users, X } from 'lucide-react';
 import { UserAvatar } from '@/components/UserAvatar';
 import { Badge } from '@/components/ui/badge';
+import { PopoverSurface } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 
 export interface FriendOption {
@@ -29,29 +30,7 @@ export function FriendMultiSelect({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open]);
+  const closePopover = useCallback(() => setOpen(false), []);
 
   const selectedSet = useMemo(() => new Set(selectedUsers), [selectedUsers]);
 
@@ -164,14 +143,17 @@ export function FriendMultiSelect({
         />
       </button>
 
-      {open && (
-        <div
-          role="listbox"
-          aria-multiselectable="true"
-          className="bside-popover absolute right-0 z-50 mt-2 w-72 overflow-hidden p-2"
-        >
-          {/* Quick actions header */}
-          <div className="flex items-center justify-between gap-1.5 pb-2">
+      <PopoverSurface
+        open={open}
+        onClose={closePopover}
+        anchorRef={containerRef}
+        preferredWidth={288}
+        role="listbox"
+        aria-multiselectable="true"
+        className="flex flex-col overflow-hidden p-2"
+      >
+        {/* Quick actions header */}
+        <div className="flex shrink-0 items-center justify-between gap-1.5 pb-2">
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
@@ -215,7 +197,7 @@ export function FriendMultiSelect({
 
           {/* Search input when > 6 friends */}
           {friends.length > 6 && (
-            <div className="relative mb-2">
+            <div className="relative mb-2 shrink-0">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
               <input
                 type="text"
@@ -228,7 +210,7 @@ export function FriendMultiSelect({
           )}
 
           {/* Checkable list */}
-          <div className="max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
+          <div className="min-h-0 flex-1 max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
             {filteredFriends.length === 0 ? (
               <div className="py-5 text-center text-xs text-[var(--ink-muted)]">
                 No listeners found
@@ -294,11 +276,10 @@ export function FriendMultiSelect({
           </div>
 
           {/* Footer hint */}
-          <div className="mt-2 border-t border-[var(--border-subtle)] pt-2 text-[10px] leading-snug text-[var(--ink-muted)]">
+          <div className="mt-2 shrink-0 border-t border-[var(--border-subtle)] pt-2 text-[10px] leading-snug text-[var(--ink-muted)]">
             View filter only — background collection still tracks everyone.
           </div>
-        </div>
-      )}
+      </PopoverSurface>
     </div>
   );
 }

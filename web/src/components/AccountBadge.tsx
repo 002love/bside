@@ -4,6 +4,7 @@ import { UserAvatar } from '@/components/UserAvatar';
 import { PixelEq } from '@/components/PixelEq';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PopoverSurface } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import type { AccountProfile, LiveFriendItem } from '@/types/api';
 
@@ -98,28 +99,7 @@ export function AccountBadge({
     }
   }, [loggingOut]);
 
-  useEffect(() => {
-    if (!open) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open]);
+  const closePopover = useCallback(() => setOpen(false), []);
 
   if (!profile || signedOut) {
     return (
@@ -182,12 +162,15 @@ export function AccountBadge({
         )}
       </button>
 
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Connected Spotify account"
-          className="bside-popover absolute right-0 z-50 mt-2 w-72 p-3.5"
-        >
+      <PopoverSurface
+        open={open}
+        onClose={closePopover}
+        anchorRef={containerRef}
+        preferredWidth={288}
+        role="dialog"
+        aria-label="Connected Spotify account"
+        className="overflow-y-auto p-3.5"
+      >
           <div className="flex items-center gap-3">
             <UserAvatar
               name={displayName}
@@ -285,8 +268,7 @@ export function AccountBadge({
               Sign out
             </button>
           </div>
-        </div>
-      )}
+      </PopoverSurface>
     </div>
   );
 }
