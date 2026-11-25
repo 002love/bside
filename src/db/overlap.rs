@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use rusqlite::params;
+use rusqlite::{params_from_iter, types::Value as SqlValue};
 use serde::Serialize;
 
-use super::Database;
+use super::{Database, build_users_filter_sql};
 
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
@@ -61,20 +61,20 @@ impl Database {
             .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
             .unwrap_or(0);
 
-        let normalized_filters: Vec<String> = friends_filter
-            .iter()
-            .map(|f| f.trim().to_lowercase())
-            .filter(|f| !f.is_empty())
-            .collect();
+        let mut bind_values: Vec<SqlValue> = vec![SqlValue::Integer(since_ms)];
+        let user_clause =
+            build_users_filter_sql(friends_filter, "user_uri", "user_name", &mut bind_values);
 
-        let mut stmt = self.conn.prepare(
+        let sql = format!(
             "
             SELECT user_uri, user_name, artist_name, track_uri, track_name, played_at_ms
             FROM listens
-            WHERE played_at_ms >= ?1
+            WHERE played_at_ms >= ?
+              AND {user_clause}
             ORDER BY played_at_ms ASC
-            ",
-        )?;
+            "
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let mut friend_names: HashMap<String, String> = HashMap::new();
         let mut friend_artists: HashMap<String, HashSet<String>> = HashMap::new();
@@ -94,7 +94,7 @@ impl Database {
         }
         let mut track_agg: HashMap<String, TrackAgg> = HashMap::new();
 
-        let rows = stmt.query_map(params![since_ms], |row| {
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -107,17 +107,6 @@ impl Database {
 
         for row in rows {
             let (user_uri, user_name, artist_name, track_uri, track_name, played_at_ms) = row?;
-
-            if !normalized_filters.is_empty() {
-                let uri_lc = user_uri.to_lowercase();
-                let name_lc = user_name.to_lowercase();
-                let matches = normalized_filters
-                    .iter()
-                    .any(|f| uri_lc.contains(f) || name_lc.contains(f));
-                if !matches {
-                    continue;
-                }
-            }
 
             // Rows are ordered by played_at_ms ASC, so inserting keeps the latest known display name.
             friend_names.insert(user_uri.clone(), user_name);

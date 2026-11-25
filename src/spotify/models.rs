@@ -116,6 +116,8 @@ pub struct TrackContext {
     pub owner: Option<String>,
     #[serde(default)]
     pub is_private: bool,
+    #[serde(default)]
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +127,7 @@ pub struct PlaylistInfo {
     pub owner: Option<String>,
     pub is_private: bool,
     pub total_tracks: Option<i32>,
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -266,6 +269,14 @@ impl FriendActivity {
             .context
             .as_ref()
             .and_then(|c| c.owner.as_deref())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn context_image_url(&self) -> Option<&str> {
+        self.track
+            .context
+            .as_ref()
+            .and_then(|c| c.image_url.as_deref())
             .filter(|s| !s.is_empty())
     }
 

@@ -19,6 +19,7 @@ pub(super) const LISTENS_MIGRATIONS: &[(&str, &str)] = &[
     ("context_type", "TEXT"),
     ("context_owner", "TEXT"),
     ("context_is_private", "INTEGER NOT NULL DEFAULT 0"),
+    ("context_image_url", "TEXT"),
     ("is_playing_seen", "INTEGER NOT NULL DEFAULT 0"),
     ("ended_at_ms", "INTEGER"),
     ("listened_ms", "INTEGER"),
@@ -61,6 +62,7 @@ pub(super) fn initialize_schema(conn: &Connection) -> Result<()> {
             context_type TEXT,
             context_owner TEXT,
             context_is_private INTEGER NOT NULL DEFAULT 0,
+            context_image_url TEXT,
             is_playing_seen INTEGER NOT NULL DEFAULT 0,
             ended_at_ms INTEGER,
             listened_ms INTEGER,
@@ -112,6 +114,11 @@ pub(super) fn initialize_schema(conn: &Connection) -> Result<()> {
             event_type TEXT NOT NULL,
             summary TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         ",
     )?;
 
@@ -135,6 +142,52 @@ pub(super) fn initialize_schema(conn: &Connection) -> Result<()> {
             ON profile_events(detected_at_ms DESC);
         ",
     )?;
+
+    run_one_time_repairs(conn)?;
+
+    Ok(())
+}
+
+const REPAIR_V1_KEY: &str = "repair_v1_skip_dedupe";
+const REPAIR_V2_KEY: &str = "repair_v2_end_of_track_dedupe";
+const REPAIR_V3_KEY: &str = "repair_v3_per_user_liked_songs";
+
+fn run_one_time_repairs(conn: &Connection) -> Result<()> {
+    let v2_done: bool = conn
+        .query_row(
+            "SELECT 1 FROM schema_meta WHERE key = ?1 LIMIT 1",
+            [REPAIR_V2_KEY],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !v2_done {
+        super::listens::repair_duplicate_listens_and_skips_conn(conn)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
+            [REPAIR_V1_KEY],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
+            [REPAIR_V2_KEY],
+        )?;
+    }
+
+    let v3_done: bool = conn
+        .query_row(
+            "SELECT 1 FROM schema_meta WHERE key = ?1 LIMIT 1",
+            [REPAIR_V3_KEY],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+
+    if !v3_done {
+        super::listens::repair_per_user_liked_songs_conn(conn)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
+            [REPAIR_V3_KEY],
+        )?;
+    }
 
     Ok(())
 }

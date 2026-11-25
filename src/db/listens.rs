@@ -1,11 +1,30 @@
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use rusqlite::params;
+use rusqlite::{Connection, Row, params, types::Value as SqlValue};
 use serde::Serialize;
 
 use crate::spotify::FriendActivity;
 
 use super::{Database, format_timestamp_local, spotify_uri_to_url};
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RepairReport {
+    pub merged_duplicates: usize,
+    pub fixed_skips: usize,
+    pub remaining_listens: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[allow(dead_code)]
+pub struct PaginatedHistory {
+    pub items: Vec<ListenRecord>,
+    pub total: i64,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FriendSummary {
@@ -52,6 +71,7 @@ pub struct ListenRecord {
     pub context_type: Option<String>,
     pub context_owner: Option<String>,
     pub context_is_private: bool,
+    pub context_image_url: Option<String>,
     pub ended_at_ms: Option<i64>,
     pub listened_ms: Option<i64>,
     pub was_skipped: Option<bool>,
@@ -91,7 +111,52 @@ impl Database {
             .cover_url
             .as_deref()
             .or(activity.track.image_url.as_deref());
-        let context_is_private = if activity.is_private_context() { 1i64 } else { 0i64 };
+
+        let raw_ctx_uri = activity.context_uri();
+        let raw_ctx_type = activity.context_type();
+        let raw_ctx_name = activity.context_name();
+        let is_liked_songs = is_liked_songs_context(raw_ctx_uri, raw_ctx_type, raw_ctx_name);
+        let canonical_liked_uri = if is_liked_songs {
+            let uid = activity
+                .user
+                .uri
+                .strip_prefix("spotify:user:")
+                .unwrap_or(&activity.user.uri)
+                .trim();
+            Some(format!("spotify:user:{uid}:collection"))
+        } else {
+            None
+        };
+        let context_name = if is_liked_songs {
+            Some("Liked Songs")
+        } else {
+            raw_ctx_name
+        };
+        let context_uri = if is_liked_songs {
+            canonical_liked_uri.as_deref()
+        } else {
+            raw_ctx_uri
+        };
+        let context_type = if is_liked_songs {
+            Some("liked_songs")
+        } else {
+            raw_ctx_type
+        };
+        let context_owner = if is_liked_songs {
+            Some(activity.user.name.as_str())
+        } else {
+            activity.context_owner()
+        };
+        let context_is_private = if is_liked_songs || activity.is_private_context() {
+            1i64
+        } else {
+            0i64
+        };
+        let context_image_url = if is_liked_songs {
+            None
+        } else {
+            activity.context_image_url()
+        };
         let is_playing_seen = if is_playing { 1i64 } else { 0i64 };
         let inferred_repeat_val = if inferred_repeat { 1i64 } else { 0i64 };
 
@@ -108,12 +173,12 @@ impl Database {
                 duration_ms, popularity, explicit,
                 track_number, disc_number, isrc,
                 album_type, release_date, album_label, cover_url,
-                context_type, context_owner, context_is_private,
+                context_type, context_owner, context_is_private, context_image_url,
                 is_playing_seen, inferred_repeat
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29
+                ?25, ?26, ?27, ?28, ?29, ?30
             )
             ",
             params![
@@ -127,8 +192,8 @@ impl Database {
                 activity.artist_uri(),
                 activity.album_name(),
                 activity.album_uri(),
-                activity.context_name(),
-                activity.context_uri(),
+                context_name,
+                context_uri,
                 activity.item_type(),
                 all_artists,
                 activity.track.duration_ms,
@@ -141,9 +206,10 @@ impl Database {
                 activity.track.release_date.as_deref(),
                 activity.track.album_label.as_deref(),
                 cover_url,
-                activity.context_type(),
-                activity.context_owner(),
+                context_type,
+                context_owner,
                 context_is_private,
+                context_image_url,
                 is_playing_seen,
                 inferred_repeat_val,
             ],
@@ -153,17 +219,70 @@ impl Database {
             self.conn.execute(
                 "
                 UPDATE listens
-                SET is_playing_seen = 1
+                SET is_playing_seen = 1,
+                    context_image_url = COALESCE(context_image_url, ?4)
                 WHERE user_uri = ?1
                   AND track_uri = ?2
                   AND played_at_ms = ?3
-                  AND is_playing_seen = 0
+                  AND (is_playing_seen = 0 OR (context_image_url IS NULL AND ?4 IS NOT NULL))
                 ",
-                params![activity.user.uri, activity.track.uri, played_at_ms],
+                params![
+                    activity.user.uri,
+                    activity.track.uri,
+                    played_at_ms,
+                    context_image_url
+                ],
             )?;
         }
 
         Ok(rows > 0)
+    }
+
+    #[allow(dead_code)]
+    pub fn mark_playing_seen(
+        &self,
+        user_uri: &str,
+        track_uri: &str,
+        played_at_ms: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "
+            UPDATE listens
+            SET is_playing_seen = 1
+            WHERE user_uri = ?1
+              AND track_uri = ?2
+              AND played_at_ms = ?3
+              AND is_playing_seen = 0
+            ",
+            params![user_uri, track_uri, played_at_ms],
+        )?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn has_recent_listen_near(
+        &self,
+        user_uri: &str,
+        track_uri: &str,
+        played_at_ms: i64,
+        window_ms: i64,
+    ) -> Result<bool> {
+        let found: bool = self
+            .conn
+            .query_row(
+                "
+                SELECT 1
+                FROM listens
+                WHERE user_uri = ?1
+                  AND track_uri = ?2
+                  AND ABS(played_at_ms - ?3) <= ?4
+                LIMIT 1
+                ",
+                params![user_uri, track_uri, played_at_ms, window_ms.abs()],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        Ok(found)
     }
 
     #[allow(dead_code)]
@@ -312,7 +431,7 @@ impl Database {
                 item_type, all_artists,
                 duration_ms, popularity, explicit,
                 album_type, release_date, album_label, cover_url, isrc,
-                context_type, context_owner, context_is_private,
+                context_type, context_owner, context_is_private, context_image_url,
                 ended_at_ms, listened_ms, was_skipped, inferred_repeat
             FROM listens
             WHERE played_at_ms >= ?1
@@ -333,46 +452,7 @@ impl Database {
 
         let rows = stmt.query_map(
             params![since_ms, filter_pattern, search_pattern, limit_val],
-            |row| {
-                let played_at_ms: i64 = row.get(1)?;
-                let explicit_int: Option<i64> = row.get(17)?;
-                let ctx_priv_int: i64 = row.get(25)?;
-                let skipped_int: Option<i64> = row.get(28)?;
-                let inferred_repeat_int: i64 = row.get(29)?;
-                Ok(ListenRecord {
-                    id: row.get(0)?,
-                    played_at_ms,
-                    played_at_local: format_timestamp_local(played_at_ms),
-                    logged_at_ms: row.get(2)?,
-                    user_uri: row.get(3)?,
-                    user_name: row.get(4)?,
-                    track_uri: row.get(5)?,
-                    track_name: row.get(6)?,
-                    artist_name: row.get(7)?,
-                    artist_uri: row.get(8)?,
-                    album_name: row.get(9)?,
-                    album_uri: row.get(10)?,
-                    context_name: row.get(11)?,
-                    context_uri: row.get(12)?,
-                    item_type: row.get(13)?,
-                    all_artists: row.get(14)?,
-                    duration_ms: row.get(15)?,
-                    popularity: row.get(16)?,
-                    explicit: explicit_int.map(|v| v != 0),
-                    album_type: row.get(18)?,
-                    release_date: row.get(19)?,
-                    album_label: row.get(20)?,
-                    cover_url: row.get(21)?,
-                    isrc: row.get(22)?,
-                    context_type: row.get(23)?,
-                    context_owner: row.get(24)?,
-                    context_is_private: ctx_priv_int != 0,
-                    ended_at_ms: row.get(26)?,
-                    listened_ms: row.get(27)?,
-                    was_skipped: skipped_int.map(|v| v != 0),
-                    inferred_repeat: inferred_repeat_int != 0,
-                })
-            },
+            row_to_listen_record,
         )?;
 
         let mut records = Vec::new();
@@ -380,6 +460,129 @@ impl Database {
             records.push(r?);
         }
         Ok(records)
+    }
+
+    #[allow(dead_code)]
+    pub fn query_history_paginated(
+        &self,
+        users: &[String],
+        days: Option<i64>,
+        search: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<PaginatedHistory> {
+        let since_ms = days
+            .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
+            .unwrap_or(0);
+        let search_pattern = search
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| format!("%{}%", q.to_lowercase()))
+            .unwrap_or_else(|| "%".to_string());
+
+        let clean_users: Vec<String> = users
+            .iter()
+            .map(|u| u.trim().to_lowercase())
+            .filter(|u| !u.is_empty())
+            .collect();
+
+        let mut where_clauses = vec![
+            "played_at_ms >= ?".to_string(),
+            "(? = '%' OR LOWER(track_name) LIKE ? OR LOWER(artist_name) LIKE ? OR LOWER(COALESCE(all_artists, '')) LIKE ? OR LOWER(COALESCE(album_name, '')) LIKE ? OR LOWER(COALESCE(context_name, '')) LIKE ? OR LOWER(user_name) LIKE ?)".to_string(),
+        ];
+
+        let mut bind_values: Vec<SqlValue> = vec![
+            SqlValue::Integer(since_ms),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern.clone()),
+            SqlValue::Text(search_pattern),
+        ];
+
+        if !clean_users.is_empty() {
+            let mut user_or_parts = Vec::with_capacity(clean_users.len());
+            for u in &clean_users {
+                user_or_parts.push(
+                    "(LOWER(user_uri) = ? OR LOWER(user_name) LIKE ? OR LOWER(user_uri) LIKE ?)"
+                        .to_string(),
+                );
+                let like = format!("%{u}%");
+                bind_values.push(SqlValue::Text(u.clone()));
+                bind_values.push(SqlValue::Text(like.clone()));
+                bind_values.push(SqlValue::Text(like));
+            }
+            where_clauses.push(format!("({})", user_or_parts.join(" OR ")));
+        }
+
+        let where_sql = where_clauses.join(" AND ");
+
+        let count_sql = format!("SELECT COUNT(*) FROM listens WHERE {where_sql}");
+        let total: i64 = self.conn.query_row(
+            &count_sql,
+            rusqlite::params_from_iter(bind_values.iter()),
+            |row| row.get(0),
+        )?;
+
+        let select_sql = format!(
+            "
+            SELECT
+                id, played_at_ms, logged_at_ms,
+                user_uri, user_name,
+                track_uri, track_name,
+                artist_name, artist_uri,
+                album_name, album_uri,
+                context_name, context_uri,
+                item_type, all_artists,
+                duration_ms, popularity, explicit,
+                album_type, release_date, album_label, cover_url, isrc,
+                context_type, context_owner, context_is_private, context_image_url,
+                ended_at_ms, listened_ms, was_skipped, inferred_repeat
+            FROM listens
+            WHERE {where_sql}
+            ORDER BY played_at_ms DESC, id DESC
+            LIMIT ? OFFSET ?
+            "
+        );
+
+        let mut page_values = bind_values;
+        page_values.push(SqlValue::Integer(limit as i64));
+        page_values.push(SqlValue::Integer(offset as i64));
+
+        let mut stmt = self.conn.prepare(&select_sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(page_values.iter()),
+            row_to_listen_record,
+        )?;
+
+        let mut items = Vec::new();
+        for r in rows {
+            items.push(r?);
+        }
+
+        let has_more = (offset as i64 + items.len() as i64) < total;
+        Ok(PaginatedHistory {
+            items,
+            total,
+            limit,
+            offset,
+            has_more,
+        })
+    }
+
+    pub fn repair_duplicate_listens_and_skips(&self) -> Result<RepairReport> {
+        let report = repair_duplicate_listens_and_skips_conn(&self.conn)?;
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('repair_v1_skip_dedupe', '1')",
+            [],
+        );
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('repair_v2_end_of_track_dedupe', '1')",
+            [],
+        );
+        Ok(report)
     }
 
     pub fn query_friends_summary(&self) -> Result<Vec<FriendSummary>> {
@@ -451,5 +654,840 @@ impl Database {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(rows)
+    }
+}
+
+fn is_liked_songs_context(uri: Option<&str>, ctx_type: Option<&str>, name: Option<&str>) -> bool {
+    if let Some(u) = uri {
+        let u_lc = u.trim().to_ascii_lowercase();
+        if u_lc == "spotify:collection"
+            || u_lc.ends_with(":collection")
+            || u_lc.contains(":collection:")
+        {
+            return true;
+        }
+    }
+    if let Some(t) = ctx_type {
+        let t_lc = t.trim().to_ascii_lowercase();
+        if t_lc == "collection" || t_lc == "liked_songs" {
+            return true;
+        }
+    }
+    if let Some(n) = name
+        && n.trim().eq_ignore_ascii_case("liked songs")
+    {
+        return true;
+    }
+    false
+}
+
+pub(super) fn repair_per_user_liked_songs_conn(conn: &Connection) -> Result<usize> {
+    let updated = conn.execute(
+        "
+        UPDATE listens
+        SET context_uri = 'spotify:user:' || REPLACE(user_uri, 'spotify:user:', '') || ':collection',
+            context_type = 'liked_songs',
+            context_name = 'Liked Songs',
+            context_owner = user_name,
+            context_is_private = 1
+        WHERE LOWER(COALESCE(context_type, '')) IN ('collection', 'liked_songs')
+           OR LOWER(COALESCE(context_uri, '')) = 'spotify:collection'
+           OR LOWER(COALESCE(context_uri, '')) LIKE '%:collection'
+           OR LOWER(COALESCE(context_uri, '')) LIKE '%:collection:%'
+           OR LOWER(COALESCE(context_name, '')) = 'liked songs'
+        ",
+        [],
+    )?;
+    Ok(updated)
+}
+
+fn row_to_listen_record(row: &Row<'_>) -> rusqlite::Result<ListenRecord> {
+    let played_at_ms: i64 = row.get(1)?;
+    let explicit_int: Option<i64> = row.get(17)?;
+    let ctx_priv_int: i64 = row.get(25)?;
+    let skipped_int: Option<i64> = row.get(29)?;
+    let inferred_repeat_int: i64 = row.get(30)?;
+    Ok(ListenRecord {
+        id: row.get(0)?,
+        played_at_ms,
+        played_at_local: format_timestamp_local(played_at_ms),
+        logged_at_ms: row.get(2)?,
+        user_uri: row.get(3)?,
+        user_name: row.get(4)?,
+        track_uri: row.get(5)?,
+        track_name: row.get(6)?,
+        artist_name: row.get(7)?,
+        artist_uri: row.get(8)?,
+        album_name: row.get(9)?,
+        album_uri: row.get(10)?,
+        context_name: row.get(11)?,
+        context_uri: row.get(12)?,
+        item_type: row.get(13)?,
+        all_artists: row.get(14)?,
+        duration_ms: row.get(15)?,
+        popularity: row.get(16)?,
+        explicit: explicit_int.map(|v| v != 0),
+        album_type: row.get(18)?,
+        release_date: row.get(19)?,
+        album_label: row.get(20)?,
+        cover_url: row.get(21)?,
+        isrc: row.get(22)?,
+        context_type: row.get(23)?,
+        context_owner: row.get(24)?,
+        context_is_private: ctx_priv_int != 0,
+        context_image_url: row.get(26)?,
+        ended_at_ms: row.get(27)?,
+        listened_ms: row.get(28)?,
+        was_skipped: skipped_int.map(|v| v != 0),
+        inferred_repeat: inferred_repeat_int != 0,
+    })
+}
+
+struct RawListenRow {
+    id: i64,
+    played_at_ms: i64,
+    track_uri: String,
+    duration_ms: Option<i64>,
+    is_playing_seen: i64,
+    ended_at_ms: Option<i64>,
+    listened_ms: Option<i64>,
+    was_skipped: Option<i64>,
+    inferred_repeat: i64,
+    context_image_url: Option<String>,
+}
+
+pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Result<RepairReport> {
+    let mut by_user: BTreeMap<String, Vec<RawListenRow>> = BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "
+            SELECT
+                id, user_uri, played_at_ms, track_uri,
+                duration_ms, is_playing_seen, ended_at_ms,
+                listened_ms, was_skipped, inferred_repeat,
+                context_image_url
+            FROM listens
+            ORDER BY user_uri ASC, played_at_ms ASC, id ASC
+            ",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                RawListenRow {
+                    id: row.get(0)?,
+                    played_at_ms: row.get(2)?,
+                    track_uri: row.get(3)?,
+                    duration_ms: row.get(4)?,
+                    is_playing_seen: row.get(5)?,
+                    ended_at_ms: row.get(6)?,
+                    listened_ms: row.get(7)?,
+                    was_skipped: row.get(8)?,
+                    inferred_repeat: row.get(9)?,
+                    context_image_url: row.get(10)?,
+                },
+            ))
+        })?;
+        for item in rows {
+            let (user_uri, raw) = item?;
+            by_user.entry(user_uri).or_default().push(raw);
+        }
+    }
+
+    let mut merged_duplicates = 0usize;
+    let mut fixed_skips = 0usize;
+    let mut ids_to_delete: Vec<i64> = Vec::new();
+    type RepairUpdate = (
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let mut updates: Vec<RepairUpdate> = Vec::new();
+
+    for rows in by_user.values() {
+        let mut i = 0;
+        while i < rows.len() {
+            let run_start = i;
+            let mut run_end = i;
+            let base_track = &rows[run_start].track_uri;
+            let base_played = rows[run_start].played_at_ms;
+            let base_dur = rows[run_start].duration_ms;
+
+            while run_end + 1 < rows.len() {
+                let next_idx = run_end + 1;
+                let next = &rows[next_idx];
+                if next.track_uri != *base_track {
+                    break;
+                }
+                let after_next = rows.get(next_idx + 1);
+                if next.inferred_repeat == 0 {
+                    let delta_from_base = next.played_at_ms.saturating_sub(base_played);
+                    let should_merge = match base_dur.filter(|&d| d > 0) {
+                        Some(d) => {
+                            let mid_track_cutoff = (d * 85) / 100;
+                            let end_of_track_window = d + 25_000;
+                            let short_stub_limit = (d / 2).min(30_000);
+                            let next_is_short_before_distinct = after_next.is_some_and(|an| {
+                                an.track_uri != next.track_uri
+                                    && an.played_at_ms.saturating_sub(next.played_at_ms)
+                                        < short_stub_limit
+                            });
+                            let next_ended_short = next.ended_at_ms.is_some_and(|e| {
+                                e.saturating_sub(next.played_at_ms) < short_stub_limit
+                            }) && after_next
+                                .is_none_or(|an| an.track_uri != next.track_uri);
+
+                            if delta_from_base < mid_track_cutoff {
+                                // Mid-track heartbeat or [LAST] pause/restart duplicate.
+                                true
+                            } else if delta_from_base <= end_of_track_window {
+                                // End-of-track transition zone (85%..100%+25s):
+                                // Merge if `next` is a [LAST] snapshot, a short stub right
+                                // before switching/ending, or was falsely marked skipped.
+                                // Preserve genuine back-to-back full repeats!
+                                next.is_playing_seen == 0
+                                    || next_is_short_before_distinct
+                                    || next_ended_short
+                                    || next.was_skipped == Some(1)
+                            } else {
+                                false
+                            }
+                        }
+                        None => delta_from_base < 180_000,
+                    };
+                    if should_merge {
+                        run_end = next_idx;
+                        continue;
+                    }
+                } else {
+                    let phantom_by_next = after_next.is_some_and(|an| {
+                        an.track_uri != next.track_uri
+                            && an.played_at_ms.saturating_sub(next.played_at_ms) <= 25_000
+                    });
+                    let phantom_by_end = next
+                        .ended_at_ms
+                        .is_some_and(|e| e.saturating_sub(next.played_at_ms) <= 25_000)
+                        && after_next.is_none_or(|an| an.track_uri != next.track_uri);
+                    if phantom_by_next || phantom_by_end {
+                        run_end = next_idx;
+                        continue;
+                    }
+                }
+                break;
+            }
+
+            let run = &rows[run_start..=run_end];
+            let keeper = &run[0];
+            let merged_count = run.len() - 1;
+            if merged_count > 0 {
+                merged_duplicates += merged_count;
+                for dup in &run[1..] {
+                    ids_to_delete.push(dup.id);
+                }
+            }
+
+            let merged_is_playing = run.iter().map(|r| r.is_playing_seen).max().unwrap_or(0);
+            let merged_ctx_img = run
+                .iter()
+                .find_map(|r| r.context_image_url.clone().filter(|s| !s.is_empty()));
+            let merged_dur = run
+                .iter()
+                .find_map(|r| r.duration_ms.filter(|&d| d > 0))
+                .or(keeper.duration_ms);
+            let last_ts_in_run = run
+                .iter()
+                .map(|r| r.ended_at_ms.unwrap_or(r.played_at_ms).max(r.played_at_ms))
+                .max()
+                .unwrap_or(base_played);
+
+            let next_after_run = rows.get(run_end + 1);
+            let session_window = merged_dur
+                .filter(|&d| d > 0)
+                .map(|d| ((d as f64) * 1.15) as i64)
+                .unwrap_or(0)
+                .max(300_000);
+
+            let followed_by_switch = next_after_run.is_some_and(|nxt| {
+                nxt.track_uri != *base_track
+                    && nxt.played_at_ms >= base_played
+                    && nxt.played_at_ms.saturating_sub(last_ts_in_run) <= session_window
+                    && nxt.played_at_ms.saturating_sub(base_played) <= session_window.saturating_mul(2)
+            });
+
+            let (new_ended_at, new_listened_ms, new_was_skipped) = if followed_by_switch {
+                let nxt = next_after_run.unwrap();
+                if merged_is_playing != 0 || keeper.was_skipped.is_some() || merged_count > 0 {
+                    let end = nxt.played_at_ms;
+                    let elapsed = (end - base_played).max(0);
+                    let listened = match merged_dur {
+                        Some(d) if d > 0 => Some(elapsed.min(d)),
+                        _ => Some(elapsed),
+                    };
+                    let skipped = if merged_is_playing != 0 {
+                        match merged_dur {
+                            Some(d) if d >= 30_000 => {
+                                let threshold = (d / 2).min(d - 15_000);
+                                Some(if elapsed < threshold { 1 } else { 0 })
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (Some(end), listened, skipped)
+                } else {
+                    (keeper.ended_at_ms, keeper.listened_ms, keeper.was_skipped)
+                }
+            } else {
+                let end_opt = if merged_count > 0 {
+                    Some(last_ts_in_run)
+                } else {
+                    keeper.ended_at_ms
+                };
+                if let Some(end) = end_opt {
+                    let elapsed = (end - base_played).max(0);
+                    let listened = match merged_dur {
+                        Some(d) if d > 0 => Some(elapsed.min(d)),
+                        _ => Some(elapsed),
+                    };
+                    let skipped = match merged_dur {
+                        Some(d) if d > 0 && elapsed >= (d * 80 / 100) => Some(0),
+                        _ => None,
+                    };
+                    (Some(end), listened, skipped)
+                } else {
+                    (None, keeper.listened_ms, None)
+                }
+            };
+
+            if new_was_skipped != keeper.was_skipped {
+                fixed_skips += 1;
+            }
+
+            if merged_is_playing != keeper.is_playing_seen
+                || merged_ctx_img != keeper.context_image_url
+                || new_ended_at != keeper.ended_at_ms
+                || new_listened_ms != keeper.listened_ms
+                || new_was_skipped != keeper.was_skipped
+            {
+                updates.push((
+                    keeper.id,
+                    merged_is_playing,
+                    merged_ctx_img,
+                    new_ended_at,
+                    new_listened_ms,
+                    new_was_skipped,
+                ));
+            }
+
+            i = run_end + 1;
+        }
+    }
+
+    if !ids_to_delete.is_empty() || !updates.is_empty() {
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut del_stmt = tx.prepare("DELETE FROM listens WHERE id = ?1")?;
+            for id in &ids_to_delete {
+                del_stmt.execute([id])?;
+            }
+
+            let mut upd_stmt = tx.prepare(
+                "
+                UPDATE listens
+                SET is_playing_seen = ?1,
+                    context_image_url = ?2,
+                    ended_at_ms = ?3,
+                    listened_ms = ?4,
+                    was_skipped = ?5
+                WHERE id = ?6
+                ",
+            )?;
+            for (id, is_playing, ctx_img, ended_at, listened_ms, was_skipped) in &updates {
+                upd_stmt.execute(params![
+                    is_playing,
+                    ctx_img.as_deref(),
+                    ended_at,
+                    listened_ms,
+                    was_skipped,
+                    id,
+                ])?;
+            }
+        }
+        tx.commit()?;
+    }
+
+    let remaining_listens: i64 =
+        conn.query_row("SELECT COUNT(*) FROM listens", [], |row| row.get(0))?;
+
+    Ok(RepairReport {
+        merged_duplicates,
+        fixed_skips,
+        remaining_listens: remaining_listens.max(0) as usize,
+    })
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use std::path::PathBuf;
+
+    use crate::db::Database;
+    use crate::spotify::{FriendActivity, FriendTrack, FriendUser, NamedUri, TrackContext};
+
+    fn temp_db(tag: &str) -> (PathBuf, Database) {
+        let dir = std::env::temp_dir().join(format!(
+            "bside_repair_test_{tag}_{}_{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Database::open(&dir.join("test.db")).unwrap();
+        (dir, db)
+    }
+
+    fn make_activity(
+        user_uri: &str,
+        user_name: &str,
+        track_uri: &str,
+        track_name: &str,
+        ts_ms: i64,
+        duration_ms: Option<i64>,
+        playing: bool,
+    ) -> FriendActivity {
+        FriendActivity {
+            timestamp: ts_ms,
+            playing,
+            user: FriendUser {
+                uri: user_uri.to_string(),
+                name: user_name.to_string(),
+                image_url: None,
+            },
+            track: FriendTrack {
+                uri: track_uri.to_string(),
+                name: track_name.to_string(),
+                artist: Some(NamedUri {
+                    uri: "spotify:artist:1".to_string(),
+                    name: "Don Toliver".to_string(),
+                }),
+                artists: vec![NamedUri {
+                    uri: "spotify:artist:1".to_string(),
+                    name: "Don Toliver".to_string(),
+                }],
+                duration_ms,
+                context: Some(TrackContext {
+                    uri: "spotify:playlist:pl1".to_string(),
+                    name: "Gym".to_string(),
+                    context_type: "playlist".to_string(),
+                    image_url: Some("https://i.scdn.co/image/pl1".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn bandit_multi_heartbeat_collapses_into_one_completed_play() {
+        let (dir, db) = temp_db("bandit");
+        let t0 = 1_700_000_000_000i64;
+        let dur = 147_000i64;
+
+        // 6s + 70s + 15s + 46s + 9s = 146s total across 5 segments, followed by next track
+        let offsets = [0, 6_000, 76_000, 91_000, 137_000];
+        let ends = [6_000, 76_000, 91_000, 137_000, 146_000];
+        for (start, end) in offsets.into_iter().zip(ends) {
+            let act = make_activity(
+                "spotify:user:u1",
+                "Alice",
+                "spotify:track:bandit",
+                "BANDIT",
+                t0 + start,
+                Some(dur),
+                true,
+            );
+            assert!(db.insert_listen(&act).unwrap());
+            db.finalize_play(
+                "spotify:user:u1",
+                "spotify:track:bandit",
+                t0 + start,
+                t0 + end,
+                Some(dur),
+                true,
+            )
+            .unwrap();
+        }
+
+        // Next distinct track at t0 + 146_000
+        let next = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:next",
+            "NEXT",
+            t0 + 146_000,
+            Some(180_000),
+            true,
+        );
+        assert!(db.insert_listen(&next).unwrap());
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 4);
+        assert_eq!(report.fixed_skips, 1);
+        assert_eq!(report.remaining_listens, 2);
+
+        let history = db.query_history(None, None, None).unwrap();
+        assert_eq!(history.len(), 2);
+        let bandit = history.iter().find(|r| r.track_uri == "spotify:track:bandit").unwrap();
+        assert_eq!(bandit.played_at_ms, t0);
+        assert_eq!(bandit.ended_at_ms, Some(t0 + 146_000));
+        assert_eq!(bandit.listened_ms, Some(146_000));
+        assert_eq!(bandit.was_skipped, Some(false));
+        assert_eq!(
+            bandit.context_image_url.as_deref(),
+            Some("https://i.scdn.co/image/pl1")
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pause_live_to_last_duplicate_collapses_without_skip() {
+        let (dir, db) = temp_db("pause_collapse");
+        let t0 = 1_700_000_000_000i64;
+        let dur = 200_000i64;
+
+        let live = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:t1",
+            "Song A",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&live).unwrap();
+        db.finalize_play("spotify:user:u1", "spotify:track:t1", t0, t0 + 45_000, Some(dur), true)
+            .unwrap();
+
+        let paused = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:t1",
+            "Song A",
+            t0 + 45_000,
+            Some(dur),
+            false,
+        );
+        db.insert_listen(&paused).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 1);
+        assert_eq!(report.fixed_skips, 1);
+        assert_eq!(report.remaining_listens, 1);
+
+        let history = db.query_history(None, None, None).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].played_at_ms, t0);
+        assert_eq!(history[0].ended_at_ms, Some(t0 + 45_000));
+        assert_eq!(history[0].listened_ms, Some(45_000));
+        assert_eq!(history[0].was_skipped, None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn genuine_short_skip_is_preserved() {
+        let (dir, db) = temp_db("genuine_skip");
+        let t0 = 1_700_000_000_000i64;
+        let dur = 200_000i64;
+
+        let a = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:short",
+            "Skipped Track",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&a).unwrap();
+        db.finalize_play("spotify:user:u1", "spotify:track:short", t0, t0 + 12_000, Some(dur), true)
+            .unwrap();
+
+        let b = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:other",
+            "Next Track",
+            t0 + 12_000,
+            Some(210_000),
+            true,
+        );
+        db.insert_listen(&b).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 0);
+        assert_eq!(report.fixed_skips, 0);
+        assert_eq!(report.remaining_listens, 2);
+
+        let history = db.query_history(None, None, None).unwrap();
+        let skipped = history.iter().find(|r| r.track_uri == "spotify:track:short").unwrap();
+        assert_eq!(skipped.was_skipped, Some(true));
+        assert_eq!(skipped.listened_ms, Some(12_000));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repair_is_idempotent() {
+        let (dir, db) = temp_db("idempotent");
+        let t0 = 1_700_000_000_000i64;
+
+        let a1 = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:t1",
+            "Track 1",
+            t0,
+            Some(180_000),
+            true,
+        );
+        let a2 = make_activity(
+            "spotify:user:u1",
+            "Alice",
+            "spotify:track:t1",
+            "Track 1",
+            t0 + 30_000,
+            Some(180_000),
+            true,
+        );
+        db.insert_listen(&a1).unwrap();
+        db.finalize_play("spotify:user:u1", "spotify:track:t1", t0, t0 + 30_000, Some(180_000), true)
+            .unwrap();
+        db.insert_listen(&a2).unwrap();
+
+        let first = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(first.merged_duplicates, 1);
+        assert_eq!(first.fixed_skips, 1);
+
+        let second = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(second.merged_duplicates, 0);
+        assert_eq!(second.fixed_skips, 0);
+        assert_eq!(second.remaining_listens, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn paginated_history_supports_multi_user_and_offsets() {
+        let (dir, db) = temp_db("paginated");
+        let now = chrono::Utc::now().timestamp_millis();
+
+        for (i, (uri, name, track)) in [
+            ("spotify:user:alice", "Alice", "Track 1"),
+            ("spotify:user:bob", "Bob", "Track 2"),
+            ("spotify:user:carol", "Carol", "Track 3"),
+            ("spotify:user:alice", "Alice", "Track 4"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let act = make_activity(
+                uri,
+                name,
+                &format!("spotify:track:t{i}"),
+                track,
+                now - ((4 - i as i64) * 60_000),
+                Some(180_000),
+                true,
+            );
+            db.insert_listen(&act).unwrap();
+        }
+
+        let page1 = db
+            .query_history_paginated(
+                &["spotify:user:alice".to_string(), "bob".to_string()],
+                None,
+                None,
+                2,
+                0,
+            )
+            .unwrap();
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 2);
+        assert!(page1.has_more);
+
+        let page2 = db
+            .query_history_paginated(
+                &["spotify:user:alice".to_string(), "bob".to_string()],
+                None,
+                None,
+                2,
+                2,
+            )
+            .unwrap();
+        assert_eq!(page2.total, 3);
+        assert_eq!(page2.items.len(), 1);
+        assert!(!page2.has_more);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn end_of_track_heartbeat_collapses_into_one_completed_play() {
+        let (dir, db) = temp_db("brain_power_eot");
+        let t0 = 1_795_619_146_000i64; // 16:05:46
+        let dur = 124_000i64; // 02:04
+
+        // Play #1: 16:05:46 -> ended by heartbeat at +121_204 ms
+        let p1 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:brain_power",
+            "Brain Power",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p1).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:brain_power",
+            t0,
+            t0 + 121_204,
+            Some(dur),
+            false,
+        )
+        .unwrap();
+
+        // Phantom end-of-track heartbeat at +121_204 ms -> falsely skipped 3.436s later
+        let p2 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:brain_power",
+            "Brain Power",
+            t0 + 121_204,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p2).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:brain_power",
+            t0 + 121_204,
+            t0 + 124_640,
+            Some(dur),
+            true,
+        )
+        .unwrap();
+
+        // Next track: Recharge at +124_640 ms (16:07:50)
+        let recharge = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:recharge",
+            "Recharge",
+            t0 + 124_640,
+            Some(128_000),
+            true,
+        );
+        db.insert_listen(&recharge).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 1);
+        assert_eq!(report.remaining_listens, 2);
+
+        let history = db.query_history(None, None, None).unwrap();
+        assert_eq!(history.len(), 2);
+        let bp = history
+            .iter()
+            .find(|r| r.track_uri == "spotify:track:brain_power")
+            .unwrap();
+        assert_eq!(bp.played_at_ms, t0);
+        assert_eq!(bp.ended_at_ms, Some(t0 + 124_640));
+        assert_eq!(bp.listened_ms, Some(124_000));
+        assert_eq!(bp.was_skipped, Some(false));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn genuine_back_to_back_full_repeat_is_preserved() {
+        let (dir, db) = temp_db("genuine_repeat");
+        let t0 = 1_795_619_146_000i64;
+        let dur = 124_000i64;
+
+        // Play #1: full 124s
+        let p1 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:brain_power",
+            "Brain Power",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p1).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:brain_power",
+            t0,
+            t0 + dur,
+            Some(dur),
+            false,
+        )
+        .unwrap();
+
+        // Play #2: full 124s repeat
+        let p2 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:brain_power",
+            "Brain Power",
+            t0 + dur,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p2).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:brain_power",
+            t0 + dur,
+            t0 + dur * 2,
+            Some(dur),
+            true,
+        )
+        .unwrap();
+
+        // Next track: Recharge at +248s
+        let recharge = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:recharge",
+            "Recharge",
+            t0 + dur * 2,
+            Some(128_000),
+            true,
+        );
+        db.insert_listen(&recharge).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 0);
+        assert_eq!(report.fixed_skips, 0);
+        assert_eq!(report.remaining_listens, 3);
+
+        let history = db.query_history(None, None, None).unwrap();
+        let bp_plays: Vec<_> = history
+            .iter()
+            .filter(|r| r.track_uri == "spotify:track:brain_power")
+            .collect();
+        assert_eq!(bp_plays.len(), 2);
+        for play in bp_plays {
+            assert_eq!(play.was_skipped, Some(false));
+            assert_eq!(play.listened_ms, Some(dur));
+        }
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -55,6 +55,7 @@ fn sample_activity(ts: i64, track_uri: &str, track_name: &str) -> FriendActivity
                 context_type: "playlist".to_string(),
                 owner: Some("spotify".to_string()),
                 is_private: false,
+                image_url: None,
             }),
             item_type: "track".to_string(),
             artists: vec![
@@ -308,6 +309,7 @@ fn rebuilds_hidden_playlists_and_lists_contexts() {
         context_type: "playlist".to_string(),
         owner: Some("alice123".to_string()),
         is_private: true,
+        image_url: None,
     });
     let mut p2 = sample_activity(now_ms - 200_000, "spotify:track:AAA", "Secret Track A");
     p2.track.context = p1.track.context.clone();
@@ -324,6 +326,7 @@ fn rebuilds_hidden_playlists_and_lists_contexts() {
         context_type: "liked_songs".to_string(),
         owner: Some("alice123".to_string()),
         is_private: true,
+        image_url: None,
     });
 
     let public_pl = sample_activity(now_ms - 10_000, "spotify:track:PUB1", "Public Track");
@@ -812,6 +815,395 @@ fn records_profile_changelog_events() {
     assert!(diff3.removed_playlists.is_empty());
     assert!(diff3.new_recent_artists.is_empty());
     assert_eq!(db.query_profile_events(None, None, None).unwrap().len(), 5);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_stats_for_users_supports_multiple_users() {
+    let (dir, db_path) = temp_db_path("stats_multi_user");
+    let db = Database::open(&db_path).unwrap();
+    let now_ms = Utc::now().timestamp_millis();
+
+    let mut alice = sample_activity(now_ms - 60_000, "spotify:track:a1", "Alice Song");
+    alice.user.uri = "spotify:user:alice".to_string();
+    alice.user.name = "Alice".to_string();
+
+    let mut bob = sample_activity(now_ms - 50_000, "spotify:track:b1", "Bob Song");
+    bob.user.uri = "spotify:user:bob".to_string();
+    bob.user.name = "Bob".to_string();
+
+    let mut carol = sample_activity(now_ms - 40_000, "spotify:track:c1", "Carol Song");
+    carol.user.uri = "spotify:user:carol".to_string();
+    carol.user.name = "Carol".to_string();
+
+    for a in [&alice, &bob, &carol] {
+        db.insert_listen(a).unwrap();
+    }
+
+    let stats_ab = db
+        .query_stats_for_users(
+            &["spotify:user:alice".to_string(), "spotify:user:bob".to_string()],
+            Some(7),
+        )
+        .unwrap();
+    assert_eq!(stats_ab.total_plays, 2);
+    assert_eq!(stats_ab.unique_tracks, 2);
+
+    let stats_all = db.query_stats_for_users(&[], Some(7)).unwrap();
+    assert_eq!(stats_all.total_plays, 3);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_contexts_and_rebuild_for_users_support_days_covers_and_listeners() {
+    let (dir, db_path) = temp_db_path("contexts_multi_user");
+    let db = Database::open(&db_path).unwrap();
+    let now_ms = Utc::now().timestamp_millis();
+    let old_ms = (Utc::now() - Duration::days(20)).timestamp_millis();
+
+    // Seed friend profiles with avatars and a public playlist image
+    db.upsert_profile(&UserProfileSnapshot {
+        user_uri: "spotify:user:alice".to_string(),
+        user_name: "Alice".to_string(),
+        image_url: Some("https://img/alice.jpg".to_string()),
+        color: None,
+        followers_count: None,
+        following_count: None,
+        public_playlists: vec![PublicPlaylist {
+            uri: "spotify:playlist:pl_fpp".to_string(),
+            name: "FPP Playlist".to_string(),
+            owner_name: Some("Alice".to_string()),
+            owner_uri: Some("spotify:user:alice".to_string()),
+            followers_count: None,
+            image_url: Some("https://img/fpp_cover.jpg".to_string()),
+        }],
+        recently_played_artists: vec![],
+    })
+    .unwrap();
+    db.upsert_profile(&UserProfileSnapshot {
+        user_uri: "spotify:user:bob".to_string(),
+        user_name: "Bob".to_string(),
+        image_url: Some("https://img/bob.jpg".to_string()),
+        color: None,
+        followers_count: None,
+        following_count: None,
+        public_playlists: vec![],
+        recently_played_artists: vec![],
+    })
+    .unwrap();
+
+    // Recent listen on pl_fpp without context_image_url -> should fallback to fpp.image_url
+    let mut a_recent = sample_activity(now_ms - 60_000, "spotify:track:t1", "Recent Track");
+    a_recent.user.uri = "spotify:user:alice".to_string();
+    a_recent.user.name = "Alice".to_string();
+    a_recent.track.cover_url = Some("https://img/track_cover.jpg".to_string());
+    a_recent.track.context = Some(TrackContext {
+        uri: "spotify:playlist:pl_fpp".to_string(),
+        name: "FPP Playlist".to_string(),
+        index: None,
+        context_type: "playlist".to_string(),
+        owner: Some("Alice".to_string()),
+        is_private: false,
+        image_url: None,
+    });
+
+    // Bob also listens to pl_fpp -> listeners should have both Alice and Bob
+    let mut b_recent = a_recent.clone();
+    b_recent.timestamp = now_ms - 30_000;
+    b_recent.user.uri = "spotify:user:bob".to_string();
+    b_recent.user.name = "Bob".to_string();
+
+    // Old listen (20 days ago) -> excluded when days = Some(7)
+    let mut a_old = sample_activity(old_ms, "spotify:track:t_old", "Old Track");
+    a_old.user.uri = "spotify:user:alice".to_string();
+    a_old.user.name = "Alice".to_string();
+    a_old.track.context = Some(TrackContext {
+        uri: "spotify:playlist:pl_old".to_string(),
+        name: "Old Playlist".to_string(),
+        index: None,
+        context_type: "playlist".to_string(),
+        owner: Some("Alice".to_string()),
+        is_private: false,
+        image_url: Some("https://img/direct_ctx.jpg".to_string()),
+    });
+
+    for a in [&a_recent, &b_recent, &a_old] {
+        db.insert_listen(a).unwrap();
+    }
+
+    let recent_ctx = db
+        .query_contexts_for_users(
+            &["spotify:user:alice".to_string(), "spotify:user:bob".to_string()],
+            Some(7),
+            false,
+        )
+        .unwrap();
+    // Both Alice and Bob have a ContextSummary row for pl_fpp; pl_old is filtered out by days=7
+    assert_eq!(recent_ctx.len(), 2);
+    assert!(recent_ctx.iter().all(|c| c.context_uri == "spotify:playlist:pl_fpp"));
+    assert_eq!(
+        recent_ctx[0].image_url.as_deref(),
+        Some("https://img/fpp_cover.jpg")
+    );
+    assert_eq!(recent_ctx[0].listeners.len(), 2);
+    let listener_imgs: HashMap<&str, Option<&str>> = recent_ctx[0]
+        .listeners
+        .iter()
+        .map(|l| (l.user_uri.as_str(), l.image_url.as_deref()))
+        .collect();
+    assert_eq!(listener_imgs["spotify:user:alice"], Some("https://img/alice.jpg"));
+    assert_eq!(listener_imgs["spotify:user:bob"], Some("https://img/bob.jpg"));
+
+    // All-time includes pl_old with its direct context_image_url
+    let all_ctx = db
+        .query_contexts_for_users(&["spotify:user:alice".to_string()], None, false)
+        .unwrap();
+    assert_eq!(all_ctx.len(), 2);
+    let old_ctx = all_ctx
+        .iter()
+        .find(|c| c.context_uri == "spotify:playlist:pl_old")
+        .unwrap();
+    assert_eq!(old_ctx.image_url.as_deref(), Some("https://img/direct_ctx.jpg"));
+
+    // rebuild_playlist_for_users with days filter + cover_url
+    let rebuilt_recent = db
+        .rebuild_playlist_for_users(
+            &["spotify:user:alice".to_string(), "spotify:user:bob".to_string()],
+            Some(7),
+            "pl_fpp",
+        )
+        .unwrap();
+    assert_eq!(rebuilt_recent.len(), 1);
+    assert_eq!(rebuilt_recent[0].play_count, 2);
+    assert_eq!(
+        rebuilt_recent[0].cover_url.as_deref(),
+        Some("https://img/track_cover.jpg")
+    );
+
+    let rebuilt_old_filtered = db
+        .rebuild_playlist_for_users(&["spotify:user:alice".to_string()], Some(7), "pl_old")
+        .unwrap();
+    assert!(rebuilt_old_filtered.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn query_profiles_and_events_for_users() {
+    let (dir, db_path) = temp_db_path("profiles_multi_user");
+    let db = Database::open(&db_path).unwrap();
+
+    let make_snap = |uri: &str, name: &str, followers: i64| UserProfileSnapshot {
+        user_uri: uri.to_string(),
+        user_name: name.to_string(),
+        image_url: None,
+        color: None,
+        followers_count: Some(followers),
+        following_count: None,
+        public_playlists: vec![],
+        recently_played_artists: vec![],
+    };
+
+    db.upsert_profile(&make_snap("spotify:user:alice", "Alice", 10)).unwrap();
+    db.upsert_profile(&make_snap("spotify:user:alice", "Alice", 15)).unwrap();
+    db.upsert_profile(&make_snap("spotify:user:bob", "Bob", 20)).unwrap();
+    db.upsert_profile(&make_snap("spotify:user:bob", "Bob", 22)).unwrap();
+    db.upsert_profile(&make_snap("spotify:user:carol", "Carol", 30)).unwrap();
+    db.upsert_profile(&make_snap("spotify:user:carol", "Carol", 35)).unwrap();
+
+    let profiles = db
+        .query_profiles_for_users(&[
+            "spotify:user:alice".to_string(),
+            "spotify:user:carol".to_string(),
+        ])
+        .unwrap();
+    assert_eq!(profiles.len(), 2);
+    assert_eq!(profiles[0].user_name, "Alice");
+    assert_eq!(profiles[1].user_name, "Carol");
+
+    let by_uri = db.get_profile_by_uri("spotify:user:bob").unwrap().unwrap();
+    assert_eq!(by_uri.user_name, "Bob");
+    assert!(db.get_profile_by_uri("spotify:user:nobody").unwrap().is_none());
+
+    let events = db
+        .query_profile_events_for_users(
+            &[
+                "spotify:user:alice".to_string(),
+                "spotify:user:bob".to_string(),
+            ],
+            Some(7),
+            10,
+        )
+        .unwrap();
+    assert_eq!(events.len(), 2);
+    let event_users: HashSet<&str> = events.iter().map(|e| e.user_uri.as_str()).collect();
+    assert!(event_users.contains("spotify:user:alice"));
+    assert!(event_users.contains("spotify:user:bob"));
+    assert!(!event_users.contains("spotify:user:carol"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn per_user_liked_songs_stay_separate_and_private() {
+    let (dir, db_path) = temp_db_path("per_user_liked_songs");
+    let db = Database::open(&db_path).unwrap();
+    let now_ms = Utc::now().timestamp_millis();
+
+    // Alice listens to shared/unscoped `spotify:collection` with `is_private = false`
+    let mut alice_liked = sample_activity(now_ms - 60_000, "spotify:track:alice_only", "Alice Gem");
+    alice_liked.user.uri = "spotify:user:alice".to_string();
+    alice_liked.user.name = "Alice".to_string();
+    alice_liked.track.context = Some(TrackContext {
+        uri: "spotify:collection".to_string(),
+        name: "Liked Songs".to_string(),
+        index: None,
+        context_type: "collection".to_string(),
+        owner: Some("spotify".to_string()),
+        is_private: false,
+        image_url: None,
+    });
+
+    // Bob listens to `spotify:user:spotify:collection` with `is_private = false`
+    let mut bob_liked = sample_activity(now_ms - 30_000, "spotify:track:bob_only", "Bob Gem");
+    bob_liked.user.uri = "spotify:user:bob".to_string();
+    bob_liked.user.name = "Bob".to_string();
+    bob_liked.track.context = Some(TrackContext {
+        uri: "spotify:user:spotify:collection".to_string(),
+        name: "Liked Songs".to_string(),
+        index: None,
+        context_type: "collection".to_string(),
+        owner: Some("spotify".to_string()),
+        is_private: false,
+        image_url: None,
+    });
+
+    db.insert_listen(&alice_liked).unwrap();
+    db.insert_listen(&bob_liked).unwrap();
+
+    // Both must appear as separate private contexts with per-user canonical URIs
+    let contexts = db.query_contexts_for_users(&[], None, true).unwrap();
+    assert_eq!(contexts.len(), 2);
+
+    let alice_ctx = contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:alice")
+        .expect("Alice Liked Songs context missing");
+    assert_eq!(alice_ctx.context_uri, "spotify:user:alice:collection");
+    assert_eq!(alice_ctx.context_name, "Liked Songs");
+    assert_eq!(alice_ctx.context_owner.as_deref(), Some("Alice"));
+    assert!(alice_ctx.is_private);
+    assert_eq!(alice_ctx.unique_tracks, 1);
+    assert_eq!(alice_ctx.listeners.len(), 1);
+    assert_eq!(alice_ctx.listeners[0].user_uri, "spotify:user:alice");
+
+    let bob_ctx = contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:bob")
+        .expect("Bob Liked Songs context missing");
+    assert_eq!(bob_ctx.context_uri, "spotify:user:bob:collection");
+    assert_eq!(bob_ctx.context_name, "Liked Songs");
+    assert_eq!(bob_ctx.context_owner.as_deref(), Some("Bob"));
+    assert!(bob_ctx.is_private);
+    assert_eq!(bob_ctx.unique_tracks, 1);
+    assert_eq!(bob_ctx.listeners.len(), 1);
+    assert_eq!(bob_ctx.listeners[0].user_uri, "spotify:user:bob");
+
+    // Rebuilding each user's Liked Songs without a user filter must return ONLY that user's tracks
+    let alice_tracks = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:alice:collection")
+        .unwrap();
+    assert_eq!(alice_tracks.len(), 1);
+    assert_eq!(alice_tracks[0].track_uri, "spotify:track:alice_only");
+
+    let bob_tracks = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:bob:collection")
+        .unwrap();
+    assert_eq!(bob_tracks.len(), 1);
+    assert_eq!(bob_tracks[0].track_uri, "spotify:track:bob_only");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn repair_v3_migrates_legacy_shared_liked_songs_rows() {
+    let (dir, db_path) = temp_db_path("repair_v3_liked_songs");
+    {
+        let db = Database::open(&db_path).unwrap();
+        // Remove v3 marker and insert legacy shared/non-private collection rows directly
+        db.conn
+            .execute(
+                "DELETE FROM schema_meta WHERE key = 'repair_v3_per_user_liked_songs'",
+                [],
+            )
+            .unwrap();
+
+        let now_ms = Utc::now().timestamp_millis();
+        db.conn
+            .execute(
+                "
+                INSERT INTO listens (
+                    played_at_ms, logged_at_ms, user_uri, user_name,
+                    track_uri, track_name, artist_name,
+                    context_name, context_uri, context_type, context_owner, context_is_private
+                ) VALUES
+                    (?1, ?1, 'spotify:user:alice', 'Alice', 'spotify:track:t_a', 'Alice Track', 'Artist A',
+                     'Liked Songs', 'spotify:collection', 'collection', 'spotify', 0),
+                    (?2, ?2, 'spotify:user:bob', 'Bob', 'spotify:track:t_b', 'Bob Track', 'Artist B',
+                     'Liked Songs', 'spotify:user:spotify:collection', 'collection', 'spotify', 0)
+                ",
+                params![now_ms - 60_000, now_ms - 30_000],
+            )
+            .unwrap();
+    }
+
+    // Re-opening runs repair_v3_per_user_liked_songs automatically
+    let db = Database::open(&db_path).unwrap();
+
+    let marker: String = db
+        .conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'repair_v3_per_user_liked_songs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(marker, "1");
+
+    let contexts = db.query_contexts_for_users(&[], None, true).unwrap();
+    assert_eq!(contexts.len(), 2);
+
+    let alice_ctx = contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:alice")
+        .unwrap();
+    assert_eq!(alice_ctx.context_uri, "spotify:user:alice:collection");
+    assert_eq!(alice_ctx.context_name, "Liked Songs");
+    assert_eq!(alice_ctx.context_owner.as_deref(), Some("Alice"));
+    assert!(alice_ctx.is_private);
+
+    let bob_ctx = contexts
+        .iter()
+        .find(|c| c.user_uri == "spotify:user:bob")
+        .unwrap();
+    assert_eq!(bob_ctx.context_uri, "spotify:user:bob:collection");
+    assert_eq!(bob_ctx.context_name, "Liked Songs");
+    assert_eq!(bob_ctx.context_owner.as_deref(), Some("Bob"));
+    assert!(bob_ctx.is_private);
+
+    let alice_rebuilt = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:alice:collection")
+        .unwrap();
+    assert_eq!(alice_rebuilt.len(), 1);
+    assert_eq!(alice_rebuilt[0].track_uri, "spotify:track:t_a");
+
+    let bob_rebuilt = db
+        .rebuild_playlist_for_users(&[], None, "spotify:user:bob:collection")
+        .unwrap();
+    assert_eq!(bob_rebuilt.len(), 1);
+    assert_eq!(bob_rebuilt[0].track_uri, "spotify:track:t_b");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

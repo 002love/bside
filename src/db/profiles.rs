@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::{Duration, Utc};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, params, params_from_iter, types::Value as SqlValue};
 use serde::Serialize;
 
 use crate::spotify::{NamedUri, PublicPlaylist, UserProfileSnapshot};
 
-use super::{Database, format_timestamp_local};
+use super::{Database, build_users_filter_sql, format_timestamp_local, single_user_vec};
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
@@ -284,27 +284,50 @@ impl Database {
         days: Option<i64>,
         limit: Option<usize>,
     ) -> Result<Vec<ProfileEvent>> {
+        let users = single_user_vec(friend_filter);
+        self.query_profile_events_internal(&users, days, limit)
+    }
+
+    #[allow(dead_code)]
+    pub fn query_profile_events_for_users(
+        &self,
+        users: &[String],
+        days: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<ProfileEvent>> {
+        self.query_profile_events_internal(users, days, Some(limit))
+    }
+
+    fn query_profile_events_internal(
+        &self,
+        users: &[String],
+        days: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProfileEvent>> {
         let since_ms = days
             .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
             .unwrap_or(0);
-        let filter_pattern = friend_filter
-            .map(|f| format!("%{}%", f.trim().to_lowercase()))
-            .unwrap_or_else(|| "%".to_string());
         let limit_val = limit.map(|l| l as i64).unwrap_or(-1);
 
-        let mut stmt = self.conn.prepare(
+        let mut bind_values: Vec<SqlValue> = vec![SqlValue::Integer(since_ms)];
+        let user_clause =
+            build_users_filter_sql(users, "user_uri", "user_name", &mut bind_values);
+        bind_values.push(SqlValue::Integer(limit_val));
+
+        let sql = format!(
             "
             SELECT id, detected_at_ms, user_uri, user_name, event_type, summary
             FROM profile_events
-            WHERE detected_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            WHERE detected_at_ms >= ?
+              AND {user_clause}
             ORDER BY detected_at_ms DESC, id DESC
-            LIMIT ?3
-            ",
-        )?;
+            LIMIT ?
+            "
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let rows = stmt
-            .query_map(params![since_ms, filter_pattern, limit_val], |row| {
+            .query_map(params_from_iter(bind_values.iter()), |row| {
                 let detected_at_ms: i64 = row.get(1)?;
                 Ok(ProfileEvent {
                     id: row.get(0)?,
@@ -323,44 +346,65 @@ impl Database {
 
     #[allow(dead_code)]
     pub fn query_profiles(&self, friend_filter: Option<&str>) -> Result<Vec<StoredProfile>> {
-        let filter_pattern = friend_filter
-            .map(|f| format!("%{}%", f.trim().to_lowercase()))
-            .unwrap_or_else(|| "%".to_string());
+        let users = single_user_vec(friend_filter);
+        self.query_profiles_for_users(&users)
+    }
 
-        let mut stmt = self.conn.prepare(
+    #[allow(dead_code)]
+    pub fn query_profiles_for_users(&self, users: &[String]) -> Result<Vec<StoredProfile>> {
+        let mut bind_values: Vec<SqlValue> = Vec::new();
+        let user_clause =
+            build_users_filter_sql(users, "user_uri", "user_name", &mut bind_values);
+
+        let sql = format!(
             "
             SELECT
                 user_uri, user_name, image_url, color,
                 followers_count, following_count,
                 recently_played_artists_json, first_seen_ms, updated_at_ms
             FROM friend_profiles
-            WHERE LOWER(user_name) LIKE ?1 OR LOWER(user_uri) LIKE ?1
+            WHERE {user_clause}
             ORDER BY user_name COLLATE NOCASE ASC
-            ",
-        )?;
+            "
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
 
         let raw_profiles = stmt
-            .query_map(params![filter_pattern], |row| {
-                let artists_json: Option<String> = row.get(6)?;
-                let recently_played_artists = artists_json
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str::<Vec<NamedUri>>(s).ok())
-                    .unwrap_or_default();
-                Ok(StoredProfile {
-                    user_uri: row.get(0)?,
-                    user_name: row.get(1)?,
-                    image_url: row.get(2)?,
-                    color: row.get(3)?,
-                    followers_count: row.get(4)?,
-                    following_count: row.get(5)?,
-                    recently_played_artists,
-                    public_playlists: Vec::new(),
-                    first_seen_ms: row.get(7)?,
-                    updated_at_ms: row.get(8)?,
-                })
-            })?
+            .query_map(params_from_iter(bind_values.iter()), row_to_stored_profile)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
+        self.attach_public_playlists(raw_profiles)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_profile_by_uri(&self, user_uri: &str) -> Result<Option<StoredProfile>> {
+        let profile = self
+            .conn
+            .query_row(
+                "
+                SELECT
+                    user_uri, user_name, image_url, color,
+                    followers_count, following_count,
+                    recently_played_artists_json, first_seen_ms, updated_at_ms
+                FROM friend_profiles
+                WHERE LOWER(user_uri) = LOWER(?1)
+                LIMIT 1
+                ",
+                params![user_uri],
+                row_to_stored_profile,
+            )
+            .optional()?;
+
+        match profile {
+            Some(p) => Ok(self.attach_public_playlists(vec![p])?.into_iter().next()),
+            None => Ok(None),
+        }
+    }
+
+    fn attach_public_playlists(
+        &self,
+        raw_profiles: Vec<StoredProfile>,
+    ) -> Result<Vec<StoredProfile>> {
         let mut pl_stmt = self.conn.prepare(
             "
             SELECT playlist_uri, name, owner_name, owner_uri, followers_count, image_url
@@ -390,4 +434,24 @@ impl Database {
 
         Ok(profiles)
     }
+}
+
+fn row_to_stored_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProfile> {
+    let artists_json: Option<String> = row.get(6)?;
+    let recently_played_artists = artists_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Vec<NamedUri>>(s).ok())
+        .unwrap_or_default();
+    Ok(StoredProfile {
+        user_uri: row.get(0)?,
+        user_name: row.get(1)?,
+        image_url: row.get(2)?,
+        color: row.get(3)?,
+        followers_count: row.get(4)?,
+        following_count: row.get(5)?,
+        recently_played_artists,
+        public_playlists: Vec::new(),
+        first_seen_ms: row.get(7)?,
+        updated_at_ms: row.get(8)?,
+    })
 }

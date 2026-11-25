@@ -183,6 +183,9 @@ enum Commands {
         days: Option<i64>,
     },
 
+    /// Repair duplicate listens and false-positive skip flags in the SQLite database
+    Repair,
+
     /// Manage the background watch daemon (macOS launchd, Linux systemd, Windows Task Scheduler)
     Service {
         #[command(subcommand)]
@@ -383,6 +386,8 @@ pub async fn run() -> Result<()> {
             friend,
             days,
         } => commands::run_export(&db_path, format, out, friend, days)?,
+
+        Commands::Repair => commands::run_repair(&db_path)?,
 
         Commands::Service { action } => match action {
             ServiceAction::Install {

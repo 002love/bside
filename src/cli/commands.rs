@@ -790,3 +790,13 @@ pub(super) fn run_export(
 
     Ok(())
 }
+
+pub(super) fn run_repair(db_path: &Path) -> Result<()> {
+    let db = Database::open(db_path)?;
+    let report = db.repair_duplicate_listens_and_skips()?;
+    println!(
+        "Database repair complete: merged_duplicates={}, fixed_skips={}, remaining_listens={}",
+        report.merged_duplicates, report.fixed_skips, report.remaining_listens
+    );
+    Ok(())
+}

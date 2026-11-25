@@ -10,7 +10,7 @@ use librespot_protocol::{
         Date as ProtoDate, Episode as ProtoEpisode, Image as ProtoImage, Track as ProtoTrack,
         album::Type as ProtoAlbumType, image::Size as ProtoImageSize,
     },
-    playlist4_external::SelectedListContent,
+    playlist4_external::{ListAttributes, SelectedListContent},
 };
 use protobuf::{EnumOrUnknown, Message};
 
@@ -42,6 +42,35 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
         let _ = write!(&mut out, "{b:02x}");
     }
     out
+}
+
+pub(super) fn extract_playlist_image_url(attrs: &ListAttributes) -> Option<String> {
+    let preferred_targets = ["default", "large", "small"];
+    for target in preferred_targets {
+        if let Some(url) = attrs
+            .picture_size
+            .iter()
+            .find(|ps| ps.target_name().eq_ignore_ascii_case(target) && !ps.url().is_empty())
+            .map(|ps| ps.url().to_string())
+        {
+            return Some(url);
+        }
+    }
+    if let Some(url) = attrs
+        .picture_size
+        .iter()
+        .find(|ps| !ps.url().is_empty())
+        .map(|ps| ps.url().to_string())
+    {
+        return Some(url);
+    }
+    if !attrs.picture().is_empty() {
+        return Some(format!(
+            "https://i.scdn.co/image/{}",
+            bytes_to_hex(attrs.picture())
+        ));
+    }
+    None
 }
 
 pub(super) fn extract_cover_url(images: &[ProtoImage]) -> Option<String> {
@@ -192,12 +221,14 @@ pub(super) async fn resolve_missing_names(
                             .map(str::to_string),
                         is_private: false,
                         total_tracks: list.length,
+                        image_url: extract_playlist_image_url(&list.attributes),
                     },
                     Err(_) => PlaylistInfo {
                         name: String::new(),
                         owner: None,
                         is_private: true,
                         total_tracks: None,
+                        image_url: None,
                     },
                 },
                 Err(_) => PlaylistInfo {
@@ -205,6 +236,7 @@ pub(super) async fn resolve_missing_names(
                     owner: None,
                     is_private: true,
                     total_tracks: None,
+                    image_url: None,
                 },
             },
             Err(_) => PlaylistInfo {
@@ -212,6 +244,7 @@ pub(super) async fn resolve_missing_names(
                 owner: None,
                 is_private: true,
                 total_tracks: None,
+                image_url: None,
             },
         };
         cache.playlists.insert(pid, info);

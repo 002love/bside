@@ -2,10 +2,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike, Utc};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, params_from_iter, types::Value as SqlValue};
 use serde::Serialize;
 
-use super::{Database, millis_to_local};
+use super::{Database, build_users_filter_sql, millis_to_local, single_user_vec};
 
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
@@ -44,12 +44,22 @@ impl Database {
         friend_filter: Option<&str>,
         days: Option<i64>,
     ) -> Result<StatsSummary> {
+        let users = single_user_vec(friend_filter);
+        self.query_stats_for_users(&users, days)
+    }
+
+    pub fn query_stats_for_users(
+        &self,
+        users: &[String],
+        days: Option<i64>,
+    ) -> Result<StatsSummary> {
         let since_ms = days
             .map(|d| (Utc::now() - Duration::days(d)).timestamp_millis())
             .unwrap_or(0);
-        let filter_pattern = friend_filter
-            .map(|f| format!("%{}%", f.trim().to_lowercase()))
-            .unwrap_or_else(|| "%".to_string());
+
+        let mut base_params: Vec<SqlValue> = vec![SqlValue::Integer(since_ms)];
+        let user_clause =
+            build_users_filter_sql(users, "user_uri", "user_name", &mut base_params);
 
         struct AggregateStatsRow {
             total_plays: i64,
@@ -65,7 +75,7 @@ impl Database {
             explicit_plays: i64,
         }
 
-        let agg = self.conn.query_row(
+        let agg_sql = format!(
             "
             SELECT
                 COUNT(*),
@@ -80,10 +90,13 @@ impl Database {
                 AVG(CAST(popularity AS REAL)),
                 COALESCE(SUM(CASE WHEN explicit = 1 THEN 1 ELSE 0 END), 0)
             FROM listens
-            WHERE played_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
-            ",
-            params![since_ms, filter_pattern],
+            WHERE played_at_ms >= ?
+              AND {user_clause}
+            "
+        );
+        let agg = self.conn.query_row(
+            &agg_sql,
+            params_from_iter(base_params.iter()),
             |row| {
                 Ok(AggregateStatsRow {
                     total_plays: row.get(0)?,
@@ -114,106 +127,117 @@ impl Database {
             explicit_plays,
         } = agg;
 
-        let mut top_tracks_stmt = self.conn.prepare(
+        let top_tracks_sql = format!(
             "
             SELECT artist_name, track_name, COUNT(*) as cnt
             FROM listens
-            WHERE played_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            WHERE played_at_ms >= ?
+              AND {user_clause}
             GROUP BY track_uri
             ORDER BY cnt DESC, MAX(played_at_ms) DESC
             LIMIT 10
-            ",
-        )?;
+            "
+        );
+        let mut top_tracks_stmt = self.conn.prepare(&top_tracks_sql)?;
         let top_tracks = top_tracks_stmt
-            .query_map(params![since_ms, filter_pattern], |row| {
+            .query_map(params_from_iter(base_params.iter()), |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let mut top_artists_stmt = self.conn.prepare(
+        let top_artists_sql = format!(
             "
             SELECT artist_name, COUNT(*) as cnt
             FROM listens
-            WHERE played_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            WHERE played_at_ms >= ?
+              AND {user_clause}
             GROUP BY artist_name
             ORDER BY cnt DESC, MAX(played_at_ms) DESC
             LIMIT 10
-            ",
-        )?;
+            "
+        );
+        let mut top_artists_stmt = self.conn.prepare(&top_artists_sql)?;
         let top_artists = top_artists_stmt
-            .query_map(params![since_ms, filter_pattern], |row| {
+            .query_map(params_from_iter(base_params.iter()), |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let mut most_skipped_stmt = self.conn.prepare(
+        let most_skipped_sql = format!(
             "
             SELECT artist_name, track_name, COUNT(*) as cnt
             FROM listens
-            WHERE played_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            WHERE played_at_ms >= ?
+              AND {user_clause}
               AND was_skipped = 1
             GROUP BY track_uri
             ORDER BY cnt DESC, MAX(played_at_ms) DESC
             LIMIT 10
-            ",
-        )?;
+            "
+        );
+        let mut most_skipped_stmt = self.conn.prepare(&most_skipped_sql)?;
         let most_skipped_tracks = most_skipped_stmt
-            .query_map(params![since_ms, filter_pattern], |row| {
+            .query_map(params_from_iter(base_params.iter()), |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
+        let most_obscure_sql = format!(
+            "
+            SELECT artist_name, track_name, popularity
+            FROM listens
+            WHERE played_at_ms >= ?
+              AND {user_clause}
+              AND popularity IS NOT NULL
+            ORDER BY popularity ASC, played_at_ms DESC
+            LIMIT 1
+            "
+        );
         let most_obscure_track: Option<(String, String, i32)> = self
             .conn
             .query_row(
-                "
-                SELECT artist_name, track_name, popularity
-                FROM listens
-                WHERE played_at_ms >= ?1
-                  AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
-                  AND popularity IS NOT NULL
-                ORDER BY popularity ASC, played_at_ms DESC
-                LIMIT 1
-                ",
-                params![since_ms, filter_pattern],
+                &most_obscure_sql,
+                params_from_iter(base_params.iter()),
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
 
+        let most_mainstream_sql = format!(
+            "
+            SELECT artist_name, track_name, popularity
+            FROM listens
+            WHERE played_at_ms >= ?
+              AND {user_clause}
+              AND popularity IS NOT NULL
+            ORDER BY popularity DESC, played_at_ms DESC
+            LIMIT 1
+            "
+        );
         let most_mainstream_track: Option<(String, String, i32)> = self
             .conn
             .query_row(
-                "
-                SELECT artist_name, track_name, popularity
-                FROM listens
-                WHERE played_at_ms >= ?1
-                  AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
-                  AND popularity IS NOT NULL
-                ORDER BY popularity DESC, played_at_ms DESC
-                LIMIT 1
-                ",
-                params![since_ms, filter_pattern],
+                &most_mainstream_sql,
+                params_from_iter(base_params.iter()),
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
 
         let mut decade_counts: HashMap<i32, i64> = HashMap::new();
         {
-            let mut dec_stmt = self.conn.prepare(
+            let dec_sql = format!(
                 "
                 SELECT release_date
                 FROM listens
-                WHERE played_at_ms >= ?1
-                  AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+                WHERE played_at_ms >= ?
+                  AND {user_clause}
                   AND release_date IS NOT NULL
                   AND release_date != ''
-                ",
-            )?;
-            let rows = dec_stmt
-                .query_map(params![since_ms, filter_pattern], |row| row.get::<_, String>(0))?;
+                "
+            );
+            let mut dec_stmt = self.conn.prepare(&dec_sql)?;
+            let rows = dec_stmt.query_map(params_from_iter(base_params.iter()), |row| {
+                row.get::<_, String>(0)
+            })?;
             for r in rows {
                 let date_str = r?;
                 if let Some(year) = date_str.get(0..4).and_then(|y| y.parse::<i32>().ok())
@@ -231,18 +255,19 @@ impl Database {
             .map(|(dec, cnt)| (format!("{dec}s"), cnt))
             .collect();
 
-        let mut ctx_stmt = self.conn.prepare(
+        let ctx_sql = format!(
             "
             SELECT COALESCE(NULLIF(context_type, ''), 'unknown') AS ct, COUNT(*) as cnt
             FROM listens
-            WHERE played_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
+            WHERE played_at_ms >= ?
+              AND {user_clause}
             GROUP BY ct
             ORDER BY cnt DESC, ct ASC
-            ",
-        )?;
+            "
+        );
+        let mut ctx_stmt = self.conn.prepare(&ctx_sql)?;
         let context_breakdown = ctx_stmt
-            .query_map(params![since_ms, filter_pattern], |row| {
+            .query_map(params_from_iter(base_params.iter()), |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -252,16 +277,18 @@ impl Database {
         let mut heatmap_grid = [[0i64; 24]; 7];
         let mut active_date_set: BTreeSet<NaiveDate> = BTreeSet::new();
         {
-            let mut ts_stmt = self.conn.prepare(
+            let ts_sql = format!(
                 "
                 SELECT played_at_ms
                 FROM listens
-                WHERE played_at_ms >= ?1
-                  AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
-                ",
-            )?;
-            let ts_rows =
-                ts_stmt.query_map(params![since_ms, filter_pattern], |row| row.get::<_, i64>(0))?;
+                WHERE played_at_ms >= ?
+                  AND {user_clause}
+                "
+            );
+            let mut ts_stmt = self.conn.prepare(&ts_sql)?;
+            let ts_rows = ts_stmt.query_map(params_from_iter(base_params.iter()), |row| {
+                row.get::<_, i64>(0)
+            })?;
             for ts in ts_rows {
                 let ms = ts?;
                 if let Some(dt) = millis_to_local(ms) {
@@ -285,7 +312,7 @@ impl Database {
         let (longest_streak_days, current_streak_days) =
             compute_streaks(&active_date_set, Local::now().date_naive());
 
-        let (session_count, avg_session_f64): (i64, Option<f64>) = self.conn.query_row(
+        let sess_sql = format!(
             "
             SELECT
                 COUNT(*),
@@ -297,10 +324,13 @@ impl Database {
                     END
                 AS REAL))
             FROM presence_sessions
-            WHERE started_at_ms >= ?1
-              AND (LOWER(user_name) LIKE ?2 OR LOWER(user_uri) LIKE ?2)
-            ",
-            params![since_ms, filter_pattern],
+            WHERE started_at_ms >= ?
+              AND {user_clause}
+            "
+        );
+        let (session_count, avg_session_f64): (i64, Option<f64>) = self.conn.query_row(
+            &sess_sql,
+            params_from_iter(base_params.iter()),
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let avg_session_ms = avg_session_f64.map(|v| v.round() as i64);

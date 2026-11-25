@@ -2,6 +2,7 @@ mod auth;
 mod feed;
 mod metadata;
 mod models;
+mod own_observer;
 mod profile;
 
 pub(super) const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
@@ -11,7 +12,11 @@ pub(super) const LISTENING_ACTIVITY_LIMIT: u32 = 100;
 
 #[allow(unused_imports)]
 pub use auth::{connect_cached, login_oauth, open_cache};
-pub use feed::{fetch_buddylist, fetch_buddylist_raw};
+#[allow(unused_imports)]
+pub use feed::{
+    WebApiAuthError, enrich_activity, fetch_buddylist, fetch_buddylist_raw,
+    fetch_own_currently_playing, fetch_own_recently_played, is_web_api_auth_error,
+};
 #[allow(unused_imports)]
 pub use metadata::format_proto_date;
 #[allow(unused_imports)]
@@ -19,6 +24,7 @@ pub use models::{
     BuddyListResponse, FriendActivity, FriendTrack, FriendUser, NameCache, NamedUri, PlaylistInfo,
     PublicPlaylist, TrackContext, UserProfileSnapshot, classify_context_type,
 };
+pub use own_observer::OwnPlaybackObserver;
 pub use profile::fetch_user_profile;
 
 #[cfg(test)]
@@ -266,5 +272,112 @@ mod tests {
             extract_cover_url(&images).as_deref(),
             Some("https://i.scdn.co/image/010fcd")
         );
+    }
+
+    #[test]
+    fn extract_playlist_image_url_prefers_picture_size_then_hex() {
+        use librespot_protocol::playlist4_external::{ListAttributes, PictureSize};
+        use super::metadata::extract_playlist_image_url;
+
+        let attrs_with_sizes = ListAttributes {
+            picture: Some(vec![0xde, 0xad, 0xbe, 0xef]),
+            picture_size: vec![
+                PictureSize {
+                    target_name: Some("small".to_string()),
+                    url: Some("https://mosaic.scdn.co/300/abc".to_string()),
+                    ..Default::default()
+                },
+                PictureSize {
+                    target_name: Some("default".to_string()),
+                    url: Some("https://mosaic.scdn.co/640/abc".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            extract_playlist_image_url(&attrs_with_sizes).as_deref(),
+            Some("https://mosaic.scdn.co/640/abc")
+        );
+
+        let attrs_hex_only = ListAttributes {
+            picture: Some(vec![0x01, 0xab, 0xff]),
+            ..Default::default()
+        };
+        assert_eq!(
+            extract_playlist_image_url(&attrs_hex_only).as_deref(),
+            Some("https://i.scdn.co/image/01abff")
+        );
+    }
+
+    #[test]
+    fn parse_own_currently_playing_and_recently_played() {
+        use super::feed::{parse_own_currently_playing, parse_own_recently_played};
+
+        let cp_json = serde_json::json!({
+            "timestamp": 1_700_000_050_000i64,
+            "progress_ms": 50_000i64,
+            "is_playing": true,
+            "context": {
+                "type": "playlist",
+                "uri": "spotify:playlist:pl123"
+            },
+            "item": {
+                "uri": "spotify:track:t123",
+                "name": "My Track",
+                "duration_ms": 200_000,
+                "popularity": 72,
+                "explicit": true,
+                "artists": [
+                    { "uri": "spotify:artist:a1", "name": "Artist 1" }
+                ],
+                "album": {
+                    "uri": "spotify:album:al1",
+                    "name": "Album 1",
+                    "release_date": "2024-01-15",
+                    "images": [
+                        { "url": "https://i.scdn.co/image/cover1", "width": 640, "height": 640 }
+                    ]
+                }
+            }
+        });
+
+        let cp = parse_own_currently_playing(&cp_json, "me123", "Me", Some("https://img/me")).unwrap();
+        assert_eq!(cp.timestamp, 1_700_000_000_000);
+        assert!(cp.playing);
+        assert_eq!(cp.user.uri, "spotify:user:me123");
+        assert_eq!(cp.user.name, "Me");
+        assert_eq!(cp.track.uri, "spotify:track:t123");
+        assert_eq!(cp.track.duration_ms, Some(200_000));
+        assert_eq!(cp.context_uri(), Some("spotify:playlist:pl123"));
+        assert_eq!(cp.context_type(), Some("playlist"));
+
+        let rp_json = serde_json::json!({
+            "items": [
+                {
+                    "played_at": "2026-11-24T20:00:00Z",
+                    "context": { "type": "album", "uri": "spotify:album:al1" },
+                    "track": {
+                        "uri": "spotify:track:t456",
+                        "name": "Recent Track",
+                        "duration_ms": 180_000,
+                        "artists": [
+                            { "uri": "spotify:artist:a2", "name": "Artist 2" }
+                        ],
+                        "album": {
+                            "uri": "spotify:album:al1",
+                            "name": "Album 1",
+                            "images": [{ "url": "https://i.scdn.co/image/cover1" }]
+                        }
+                    }
+                }
+            ]
+        });
+
+        let rp = parse_own_recently_played(&rp_json, "me123", "Me", None);
+        assert_eq!(rp.len(), 1);
+        assert!(!rp[0].playing);
+        assert_eq!(rp[0].track.uri, "spotify:track:t456");
+        assert_eq!(rp[0].context_image_url(), Some("https://i.scdn.co/image/cover1"));
     }
 }
