@@ -5,28 +5,27 @@ import type { AvatarMap } from '@/types/api';
 export interface UserAvatarProps {
   name: string;
   imageUrl?: string | null;
-  size?: 'xs' | 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   isLive?: boolean;
   isSelf?: boolean;
   className?: string;
 }
 
 const SIZE_CLASSES = {
-  xs: { box: 'h-[18px] w-[18px]', text: 'text-[8px]', dot: 'h-[6px] w-[6px] -right-[1px] -bottom-[1px]' },
-  sm: { box: 'h-[22px] w-[22px]', text: 'text-[9px]', dot: 'h-[7px] w-[7px] -right-[1px] -bottom-[1px]' },
-  md: { box: 'h-[28px] w-[28px]', text: 'text-[10px]', dot: 'h-[8px] w-[8px] -right-[1px] -bottom-[1px]' },
-  lg: { box: 'h-[40px] w-[40px]', text: 'text-xs', dot: 'h-[10px] w-[10px] right-0 bottom-0' },
+  xs: { box: 'h-[18px] w-[18px]', text: 'text-[8.5px]' },
+  sm: { box: 'h-6 w-6', text: 'text-[10px]' },
+  md: { box: 'h-8 w-8', text: 'text-[11px]' },
+  lg: { box: 'h-10 w-10', text: 'text-xs' },
+  xl: { box: 'h-14 w-14', text: 'text-sm' },
 } as const;
 
 const FALLBACK_PALETTE = [
-  'bg-[#1f4d35] text-[#b9f3ce]',
-  'bg-[#233d5a] text-[#bfd9f8]',
-  'bg-[#4a3254] text-[#e4c4f1]',
-  'bg-[#523b26] text-[#f4d7b7]',
-  'bg-[#254b4b] text-[#b8ecec]',
-  'bg-[#552d36] text-[#f5c2cd]',
-  'bg-[#3b4728] text-[#d5e8b7]',
-  'bg-[#3a3656] text-[#d2ccf8]',
+  'bg-[#2b211c] text-[#e7b99c]',
+  'bg-[#1e2633] text-[#b4ccf0]',
+  'bg-[#222c26] text-[#b6d7c1]',
+  'bg-[#2b241d] text-[#e6cca8]',
+  'bg-[#252230] text-[#c7c0e8]',
+  'bg-[#2d2025] text-[#e8b8c4]',
 ] as const;
 
 function hashName(input: string): number {
@@ -99,8 +98,9 @@ export function UserAvatar({
     >
       <span
         className={cn(
-          'flex h-full w-full items-center justify-center overflow-hidden rounded-[var(--radius-avatar)] border border-[var(--border-subtle)] bg-[var(--bg-elevated)]',
-          isSelf && 'ring-2 ring-[var(--accent-primary)]/70 ring-offset-1 ring-offset-[var(--bg-canvas)]',
+          'flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/10 transition-shadow',
+          isLive && 'ring-[1.5px] ring-[var(--accent-ember)] ring-offset-[1.5px] ring-offset-[var(--bg-canvas)]',
+          !isLive && isSelf && 'ring-white/25',
         )}
       >
         {imageUrl && !imgFailed ? (
@@ -114,7 +114,7 @@ export function UserAvatar({
         ) : (
           <span
             className={cn(
-              'flex h-full w-full items-center justify-center font-mono font-semibold leading-none tracking-tight',
+              'flex h-full w-full items-center justify-center font-medium leading-none tracking-tight',
               cfg.text,
               paletteClass,
             )}
@@ -123,15 +123,6 @@ export function UserAvatar({
           </span>
         )}
       </span>
-      {isLive && (
-        <span
-          aria-label="Listening now"
-          className={cn(
-            'absolute rounded-full border-[1.5px] border-[var(--bg-panel)] bg-[var(--accent-primary)] animate-live-dot',
-            cfg.dot,
-          )}
-        />
-      )}
     </span>
   );
 }

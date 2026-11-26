@@ -1,51 +1,57 @@
 @import "tailwindcss";
 
 @layer base {
-  /* =========================================================================
-     Theme 1: Spotify Dark (Default) — Authentic Spotify dark surfaces with
-     signature two-layer tactile cards & buttons
-     ========================================================================= */
-  :root,
-  [data-theme="spotify"] {
+  :root {
     color-scheme: dark;
 
-    /* Surfaces */
-    --bg-canvas: #121212;
-    --bg-panel: #181818;
-    --bg-inset: #141414;
-    --bg-elevated: #242424;
-    --bg-hover: #282828;
-    --bg-popover: #282828;
+    /* Obsidian Studio — Quiet, matte dark surfaces */
+    --bg-rail: #0a0a0c;
+    --bg-canvas: #0f0f12;
+    --bg-surface: #151519;
+    --bg-panel: #151519;
+    --bg-inset: #121216;
+    --bg-elevated: #1c1c22;
+    --bg-hover: rgba(255, 255, 255, 0.045);
+    --bg-active: rgba(255, 255, 255, 0.085);
+    --bg-popover: #1a1a20;
 
-    /* Borders */
-    --border-subtle: rgba(255, 255, 255, 0.08);
-    --border-strong: rgba(255, 255, 255, 0.16);
-    --border-accent: rgba(29, 185, 84, 0.55);
+    /* Crisp hairlines */
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --border-focus: rgba(255, 255, 255, 0.28);
+    --border-accent: rgba(232, 139, 90, 0.38);
     --border-active: rgba(255, 255, 255, 0.22);
 
     /* Ink */
-    --ink-primary: #ffffff;
-    --ink-secondary: #b3b3b3;
-    --ink-muted: #a7a7a7;
-    --ink-on-accent: #000000;
+    --ink-primary: #f4f4f6;
+    --ink-secondary: #a1a1aa;
+    --ink-muted: #6e6e78;
+    --ink-on-accent: #09090b;
 
-    /* Accents */
-    --accent-primary: #1DB954;
-    --accent-hover: #1ED760;
-    --accent-muted: #169c46;
-    --accent-soft: rgba(29, 185, 84, 0.14);
+    /* Restrained accents — monochrome primary + warm studio ember */
+    --accent-primary: #e88b5a;
+    --accent-hover: #f09e72;
+    --accent-muted: #b5653d;
+    --accent-soft: rgba(232, 139, 90, 0.14);
+    --accent-ember: #e88b5a;
+    --accent-ember-soft: rgba(232, 139, 90, 0.14);
+    --accent-blue: #7aa2f7;
+    --accent-sage: #86b89a;
+    --accent-cta: #fafafa;
+    --accent-cta-hover: #e4e4e7;
 
     /* Semantic status */
-    --danger: #f15e6c;
-    --danger-soft: rgba(241, 94, 108, 0.15);
-    --warning: #ffa42b;
-    --warning-soft: rgba(255, 164, 43, 0.15);
+    --danger: #e56b6f;
+    --danger-soft: rgba(229, 107, 111, 0.14);
+    --warning: #e5a952;
+    --warning-soft: rgba(229, 169, 82, 0.14);
+    --spotify: #1db954;
 
-    /* Legacy aliases (backwards compatibility) */
-    --accent-moss: #169c46;
-    --accent-sage: #1DB954;
-    --accent-amber: #ffa42b;
-    --accent-rust: #f15e6c;
+    /* Legacy token aliases for smooth transition */
+    --accent-moss: #86b89a;
+    --accent-sage-alias: #86b89a;
+    --accent-amber: #e5a952;
+    --accent-rust: #e56b6f;
 
     /* Radii */
     --radius-card: 12px;
@@ -54,123 +60,30 @@
     --radius-avatar: 9999px;
 
     /* Typography */
-    --font-body: 'Plus Jakarta Sans', Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-heading: 'Plus Jakarta Sans', Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+    --font-heading: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
     /* Charts */
-    --chart-1: #1DB954;
-    --chart-2: #539bf5;
-    --chart-grid: rgba(255, 255, 255, 0.07);
-    --chart-axis: #a7a7a7;
-    --chart-tooltip-bg: #282828;
-    --chart-tooltip-border: rgba(255, 255, 255, 0.15);
+    --chart-1: #e88b5a;
+    --chart-2: #7aa2f7;
+    --chart-3: #86b89a;
+    --chart-grid: rgba(255, 255, 255, 0.055);
+    --chart-axis: #71717a;
+    --chart-tooltip-bg: #1c1c22;
+    --chart-tooltip-border: rgba(255, 255, 255, 0.12);
 
-    /* 5-level Heatmap Scale */
-    --heat-0: #1f1f1f;
-    --heat-1: #123c22;
-    --heat-2: #166534;
-    --heat-3: #1aa34a;
-    --heat-4: #1ED760;
+    /* 5-level Heatmap Scale — warm studio ember */
+    --heat-0: #17171c;
+    --heat-1: #30211b;
+    --heat-2: #5c3727;
+    --heat-3: #a35a38;
+    --heat-4: #e88b5a;
 
-    /* Two-layer tactile elevation */
-    --layer-shadow-card: 3px 3px 0px rgba(29, 185, 84, 0.22), 0 8px 24px rgba(0, 0, 0, 0.42);
-    --layer-shadow-card-hover: 5px 5px 0px rgba(29, 185, 84, 0.38), 0 12px 28px rgba(0, 0, 0, 0.52);
-    --layer-shadow-btn: 3px 3px 0px #0f5f2b;
-    --layer-shadow-btn-hover: 4px 4px 0px #0f5f2b;
-    --layer-shadow-btn-active: 1px 1px 0px #0f5f2b;
-    --layer-shadow-btn-secondary: 3px 3px 0px rgba(255, 255, 255, 0.08);
-    --layer-shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.65), 0 4px 12px rgba(0, 0, 0, 0.45);
-
-    /* Canvas texture */
-    --canvas-pattern: radial-gradient(ellipse 80% 45% at 20% 0%, rgba(29, 185, 84, 0.07) 0%, transparent 65%);
-    --canvas-pattern-size: 100% 100%;
-    --scrollbar-radius: 9999px;
-  }
-
-  /* =========================================================================
-     Theme 2: Classic B-Side — Dark editorial monospace with moss offset plates
-     ========================================================================= */
-  [data-theme="classic"] {
-    color-scheme: dark;
-
-    /* Surfaces */
-    --bg-canvas: #111110;
-    --bg-panel: #181816;
-    --bg-inset: #141412;
-    --bg-elevated: #20201d;
-    --bg-hover: #20201d;
-    --bg-popover: #181816;
-
-    /* Borders */
-    --border-subtle: #2b2b27;
-    --border-strong: #45453e;
-    --border-accent: #89b471;
-    --border-active: #45453e;
-
-    /* Ink */
-    --ink-primary: #efeee8;
-    --ink-secondary: #c7c6bc;
-    --ink-muted: #8d8c84;
-    --ink-on-accent: #111110;
-
-    /* Accents */
-    --accent-primary: #89b471;
-    --accent-hover: #a1cb89;
-    --accent-muted: #557445;
-    --accent-soft: rgba(85, 116, 69, 0.22);
-
-    /* Semantic status */
-    --danger: #e06c60;
-    --danger-soft: rgba(184, 93, 79, 0.18);
-    --warning: #d4a259;
-    --warning-soft: rgba(196, 138, 71, 0.18);
-
-    /* Legacy aliases */
-    --accent-moss: #557445;
-    --accent-sage: #89b471;
-    --accent-amber: #c48a47;
-    --accent-rust: #b85d4f;
-
-    /* Radii */
-    --radius-card: 0px;
-    --radius-control: 0px;
-    --radius-pill: 0px;
-    --radius-avatar: 2px;
-
-    /* Typography */
-    --font-body: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    --font-heading: 'Barlow Condensed', system-ui, -apple-system, sans-serif;
-    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-
-    /* Charts */
-    --chart-1: #89b471;
-    --chart-2: #d4a259;
-    --chart-grid: #2b2b27;
-    --chart-axis: #8d8c84;
-    --chart-tooltip-bg: #181816;
-    --chart-tooltip-border: #45453e;
-
-    /* 5-level Heatmap Scale */
-    --heat-0: #181816;
-    --heat-1: #2a3723;
-    --heat-2: #415935;
-    --heat-3: #557445;
-    --heat-4: #89b471;
-
-    /* Two-layer tactile elevation */
-    --layer-shadow-card: 4px 4px 0px #2b2b27;
-    --layer-shadow-card-hover: 5px 5px 0px #557445;
-    --layer-shadow-btn: 4px 4px 0px #557445;
-    --layer-shadow-btn-hover: 5px 5px 0px #557445;
-    --layer-shadow-btn-active: 1px 1px 0px #557445;
-    --layer-shadow-btn-secondary: 3px 3px 0px #2b2b27;
-    --layer-shadow-popover: 4px 4px 0px #2b2b27;
-
-    /* Canvas texture */
-    --canvas-pattern: radial-gradient(rgba(239, 238, 232, 0.055) 1px, transparent 1px);
-    --canvas-pattern-size: 16px 16px;
-    --scrollbar-radius: 0px;
+    /* Clean depth shadows (never neon, never offset) */
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    --shadow-art: 0 10px 28px rgba(0, 0, 0, 0.48);
   }
 
   * {
@@ -182,11 +95,9 @@
     background-color: var(--bg-canvas);
     color: var(--ink-primary);
     font-family: var(--font-body);
-    transition: background-color 180ms ease, color 180ms ease;
-  }
-
-  [data-theme="classic"] body {
-    font-feature-settings: "zero" 1;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 }
 
@@ -195,7 +106,7 @@
    ========================================================================= */
 .font-display {
   font-family: var(--font-heading);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
 }
 
 .font-body {
@@ -204,114 +115,63 @@
 
 .font-mono {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
-/* Canvas background texture (ambient emerald sheen in Spotify, dot grid in Classic) */
-.bg-pixel-grid {
-  background-image: var(--canvas-pattern);
-  background-size: var(--canvas-pattern-size);
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
 /* =========================================================================
-   Two-Layer Tactile Card, Button & Popover Surfaces
+   Clean Surface Primitives
    ========================================================================= */
 .bside-card {
-  background-color: var(--bg-panel);
+  background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
-  box-shadow: var(--layer-shadow-card);
-  transition:
-    transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    border-color 150ms ease,
-    background-color 150ms ease;
+  box-shadow: var(--shadow-card);
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .bside-card-interactive {
-  background-color: var(--bg-panel);
+  background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
-  box-shadow: var(--layer-shadow-card);
+  box-shadow: var(--shadow-card);
   transition:
-    transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    border-color 150ms ease,
-    background-color 150ms ease;
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms ease,
+    background-color 160ms ease;
 }
 
 .bside-card-interactive:hover {
-  transform: translate(-1px, -1px);
   border-color: var(--border-strong);
-  box-shadow: var(--layer-shadow-card-hover);
+  background-color: #19191f;
 }
 
 .bside-card-interactive:active {
-  transform: translate(1px, 1px);
-  box-shadow: var(--layer-shadow-card);
-}
-
-.bside-btn-layered {
-  box-shadow: var(--layer-shadow-btn);
-  transition:
-    transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease;
-}
-
-.bside-btn-layered:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: var(--layer-shadow-btn-hover);
-}
-
-.bside-btn-layered:active:not(:disabled) {
-  transform: translate(2px, 2px);
-  box-shadow: var(--layer-shadow-btn-active);
+  transform: scale(0.992);
 }
 
 .bside-popover {
   background-color: var(--bg-popover);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  box-shadow: var(--layer-shadow-popover);
+  border-radius: 10px;
+  box-shadow: var(--shadow-popover);
   color: var(--ink-primary);
-  animation: bsidePopoverIn 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: bsidePopoverIn 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* Backwards-compatible neo-brutalist shadow classes mapped to active theme */
-.shadow-moss {
-  box-shadow: var(--layer-shadow-btn);
-  transition:
-    transform 120ms cubic-bezier(0.2, 0, 0, 1),
-    box-shadow 120ms cubic-bezier(0.2, 0, 0, 1),
-    border-color 120ms ease;
+.tactile-press {
+  transition: transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
-.shadow-moss-interactive {
-  box-shadow: var(--layer-shadow-btn);
-  transition:
-    transform 110ms cubic-bezier(0.2, 0, 0, 1),
-    box-shadow 110ms cubic-bezier(0.2, 0, 0, 1),
-    background-color 120ms ease;
-}
-
-.shadow-moss-interactive:hover:not(:disabled) {
-  transform: translate(-1px, -1px);
-  box-shadow: var(--layer-shadow-btn-hover);
-}
-
-.shadow-moss-interactive:active:not(:disabled) {
-  transform: translate(2px, 2px);
-  box-shadow: var(--layer-shadow-btn-active);
-}
-
-.shadow-edge {
-  box-shadow: var(--layer-shadow-btn-secondary);
+.tactile-press:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 /* =========================================================================
-   Tasteful Animations
+   Subtle, Intentional Motion
    ========================================================================= */
 @keyframes bsideFadeUp {
   from {
@@ -325,7 +185,7 @@
 }
 
 .animate-fade-up {
-  animation: bsideFadeUp 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: bsideFadeUp 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 @keyframes bsidePopoverIn {
@@ -339,117 +199,35 @@
   }
 }
 
-.animate-popover-in {
-  animation: bsidePopoverIn 150ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+/* Quiet 3-bar audio level animation (calm, non-flickering) */
+@keyframes audioBar1 {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(0.95); }
 }
 
-@keyframes bsidePulseRing {
-  0% {
-    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0.55);
-  }
-  70% {
-    box-shadow: 0 0 0 5px rgba(29, 185, 84, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(29, 185, 84, 0);
-  }
+@keyframes audioBar2 {
+  0%, 100% { transform: scaleY(0.85); }
+  50% { transform: scaleY(0.3); }
 }
 
-.animate-live-dot {
-  animation: bsidePulseRing 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+@keyframes audioBar3 {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
 }
 
-/* Vinyl spin animation */
-@keyframes vinyl-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.animate-audio-bar-1 {
+  transform-origin: bottom;
+  animation: audioBar1 1.15s ease-in-out infinite;
 }
 
-.animate-vinyl-spin {
-  animation: vinyl-spin 5s linear infinite;
+.animate-audio-bar-2 {
+  transform-origin: bottom;
+  animation: audioBar2 0.92s ease-in-out infinite;
 }
 
-/* Stepped pixel indicator blink */
-@keyframes pixel-blink {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
-}
-
-.animate-pixel-blink {
-  animation: pixel-blink 1.4s steps(2, start) infinite;
-}
-
-/* Equalizer column animations */
-@keyframes pixel-eq-1 {
-  0% { height: 25%; }
-  25% { height: 75%; }
-  50% { height: 50%; }
-  75% { height: 100%; }
-  100% { height: 25%; }
-}
-
-@keyframes pixel-eq-2 {
-  0% { height: 100%; }
-  25% { height: 50%; }
-  50% { height: 75%; }
-  75% { height: 25%; }
-  100% { height: 100%; }
-}
-
-@keyframes pixel-eq-3 {
-  0% { height: 50%; }
-  25% { height: 100%; }
-  50% { height: 25%; }
-  75% { height: 75%; }
-  100% { height: 50%; }
-}
-
-@keyframes pixel-eq-4 {
-  0% { height: 75%; }
-  25% { height: 25%; }
-  50% { height: 100%; }
-  75% { height: 50%; }
-  100% { height: 75%; }
-}
-
-.animate-pixel-eq-1 {
-  animation: pixel-eq-1 0.9s steps(4, end) infinite;
-}
-
-.animate-pixel-eq-2 {
-  animation: pixel-eq-2 0.78s steps(4, end) infinite;
-}
-
-.animate-pixel-eq-3 {
-  animation: pixel-eq-3 1.02s steps(4, end) infinite;
-}
-
-.animate-pixel-eq-4 {
-  animation: pixel-eq-4 0.84s steps(4, end) infinite;
-}
-
-[data-theme="spotify"] .animate-pixel-eq-1 {
-  animation: pixel-eq-1 0.85s ease-in-out infinite;
-}
-
-[data-theme="spotify"] .animate-pixel-eq-2 {
-  animation: pixel-eq-2 0.72s ease-in-out infinite;
-}
-
-[data-theme="spotify"] .animate-pixel-eq-3 {
-  animation: pixel-eq-3 0.96s ease-in-out infinite;
-}
-
-[data-theme="spotify"] .animate-pixel-eq-4 {
-  animation: pixel-eq-4 0.78s ease-in-out infinite;
+.animate-audio-bar-3 {
+  transform-origin: bottom;
+  animation: audioBar3 1.28s ease-in-out infinite;
 }
 
 /* Reduced motion support */
@@ -464,21 +242,25 @@
   }
 }
 
-/* Theme-aware scrollbars */
+/* Subtle native scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-canvas);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: var(--scrollbar-radius);
+  background: rgba(255, 255, 255, 0.11);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--ink-muted);
+  background: rgba(255, 255, 255, 0.22);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }

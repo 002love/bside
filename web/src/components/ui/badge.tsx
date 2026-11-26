@@ -3,22 +3,22 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const badgeStyles = cva(
-  'inline-flex items-center gap-1 rounded-[var(--radius-pill)] border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider transition-colors',
+  'inline-flex items-center gap-1 rounded-[6px] border px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors',
   {
     variants: {
       variant: {
         default:
-          'border-[var(--border-accent)] bg-[var(--accent-soft)] text-[var(--accent-primary)]',
+          'border-[var(--border-accent)] bg-[var(--accent-ember-soft)] text-[var(--accent-ember)]',
         secondary:
-          'border-[var(--border-subtle)] bg-[var(--bg-inset)] text-[var(--ink-primary)]',
+          'border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--ink-secondary)]',
         outline:
           'border-[var(--border-subtle)] bg-transparent text-[var(--ink-muted)]',
         warning:
-          'border-[var(--warning)]/50 bg-[var(--warning-soft)] text-[var(--warning)]',
+          'border-[var(--warning)]/30 bg-[var(--warning-soft)] text-[var(--warning)]',
         destructive:
-          'border-[var(--danger)]/50 bg-[var(--danger-soft)] text-[var(--danger)]',
+          'border-[var(--danger)]/30 bg-[var(--danger-soft)] text-[var(--danger)]',
         info:
-          'border-[var(--border-strong)] bg-[var(--bg-elevated)] text-[var(--ink-secondary)]',
+          'border-[var(--border-subtle)] bg-white/[0.05] text-[var(--ink-secondary)]',
       },
     },
     defaultVariants: {

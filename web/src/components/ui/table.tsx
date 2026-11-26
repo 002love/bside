@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElement>) {
   return (
     <div className="relative w-full overflow-x-auto">
-      <table className={cn('w-full caption-bottom text-xs', className)} {...props} />
+      <table className={cn('w-full caption-bottom text-[13px]', className)} {...props} />
     </div>
   );
 }
@@ -12,7 +12,7 @@ export function Table({ className, ...props }: TableHTMLAttributes<HTMLTableElem
 export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
   return (
     <thead
-      className={cn('border-b border-[var(--border-subtle)] bg-[var(--bg-inset)]', className)}
+      className={cn('border-b border-[var(--border-subtle)]', className)}
       {...props}
     />
   );
@@ -20,14 +20,14 @@ export function TableHeader({ className, ...props }: HTMLAttributes<HTMLTableSec
 
 export function TableBody({ className, ...props }: HTMLAttributes<HTMLTableSectionElement>) {
   return (
-    <tbody className={cn('divide-y divide-[var(--border-subtle)]', className)} {...props} />
+    <tbody className={cn('divide-y divide-[var(--border-subtle)]/60', className)} {...props} />
   );
 }
 
 export function TableRow({ className, ...props }: HTMLAttributes<HTMLTableRowElement>) {
   return (
     <tr
-      className={cn('transition-colors hover:bg-[var(--bg-hover)]', className)}
+      className={cn('transition-colors duration-100 hover:bg-[var(--bg-hover)]', className)}
       {...props}
     />
   );
@@ -37,7 +37,7 @@ export function TableHead({ className, ...props }: ThHTMLAttributes<HTMLTableCel
   return (
     <th
       className={cn(
-        'h-9 px-3 text-left align-middle font-mono text-[10px] font-semibold uppercase tracking-widest text-[var(--ink-muted)]',
+        'h-9 px-3 text-left align-middle text-[11.5px] font-medium text-[var(--ink-muted)]',
         className,
       )}
       {...props}
