@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { EASE_OUT_EXPO, PageTransition, SPRING_SNAPPY } from '@/components/ui/motion';
 import { AccountBadge } from '@/components/AccountBadge';
+import { BrandMark } from '@/components/BrandMark';
 import { FriendMultiSelect, type FriendOption } from '@/components/FriendMultiSelect';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { LiveNowSection } from '@/components/LiveNowSection';
@@ -369,19 +370,12 @@ export function App() {
             setActiveTab('live');
             setMobileNavOpen(false);
           }}
-          className="flex items-center gap-2 text-left transition-opacity hover:opacity-85 cursor-pointer"
+          className="group flex items-center gap-2.5 text-left transition-opacity hover:opacity-90 cursor-pointer"
         >
-          <span className="font-display text-[18px] font-bold tracking-[-0.035em] text-white">
+          <BrandMark size={24} animated={liveSpinningCount > 0} />
+          <span className="font-display text-[17.5px] font-bold tracking-[-0.035em] text-white">
             bside
           </span>
-          <span
-            className="h-1.5 w-1.5 rounded-full transition-colors duration-500"
-            style={{
-              backgroundColor:
-                liveSpinningCount > 0 ? primaryLiveAccent.accent : 'var(--accent-ember)',
-            }}
-            aria-hidden="true"
-          />
         </button>
 
         <span className="text-[11px] font-medium text-[var(--ink-muted)]">
