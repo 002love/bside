@@ -5,9 +5,11 @@ import type { AvatarMap } from '@/types/api';
 export interface UserAvatarProps {
   name: string;
   imageUrl?: string | null;
-  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+  size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   isLive?: boolean;
   isSelf?: boolean;
+  /** Optional dynamic ring accent color (e.g. from useCoverAccent or Spotify profile color). */
+  ringColor?: string;
   className?: string;
 }
 
@@ -15,17 +17,18 @@ const SIZE_CLASSES = {
   xs: { box: 'h-[18px] w-[18px]', text: 'text-[8.5px]' },
   sm: { box: 'h-6 w-6', text: 'text-[10px]' },
   md: { box: 'h-8 w-8', text: 'text-[11px]' },
-  lg: { box: 'h-10 w-10', text: 'text-xs' },
-  xl: { box: 'h-14 w-14', text: 'text-sm' },
+  lg: { box: 'h-11 w-11', text: 'text-xs' },
+  xl: { box: 'h-16 w-16', text: 'text-base' },
+  '2xl': { box: 'h-28 w-28', text: 'text-2xl' },
 } as const;
 
 const FALLBACK_PALETTE = [
-  'bg-[#2b211c] text-[#e7b99c]',
+  'bg-[#2b211c] text-[#f0c0a2]',
   'bg-[#1e2633] text-[#b4ccf0]',
-  'bg-[#222c26] text-[#b6d7c1]',
-  'bg-[#2b241d] text-[#e6cca8]',
-  'bg-[#252230] text-[#c7c0e8]',
-  'bg-[#2d2025] text-[#e8b8c4]',
+  'bg-[#1f2e26] text-[#a7dec0]',
+  'bg-[#2d241c] text-[#ebd1aa]',
+  'bg-[#262033] text-[#cbbef0]',
+  'bg-[#301e25] text-[#f0b4c4]',
 ] as const;
 
 function hashName(input: string): number {
@@ -75,6 +78,7 @@ export function UserAvatar({
   size = 'md',
   isLive = false,
   isSelf = false,
+  ringColor,
   className,
 }: UserAvatarProps) {
   const [imgFailed, setImgFailed] = useState(false);
@@ -87,6 +91,13 @@ export function UserAvatar({
   const paletteClass = FALLBACK_PALETTE[hashName(name || '?') % FALLBACK_PALETTE.length];
   const initials = getInitials(name);
 
+  const customRingStyle =
+    isLive && ringColor
+      ? { boxShadow: `0 0 0 1.5px #09090b, 0 0 0 3px ${ringColor}` }
+      : ringColor && !isLive
+        ? { boxShadow: `0 0 0 1.5px ${ringColor}` }
+        : undefined;
+
   return (
     <span
       className={cn(
@@ -97,10 +108,13 @@ export function UserAvatar({
       title={name}
     >
       <span
+        style={customRingStyle}
         className={cn(
-          'flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/10 transition-shadow',
-          isLive && 'ring-[1.5px] ring-[var(--accent-ember)] ring-offset-[1.5px] ring-offset-[var(--bg-canvas)]',
-          !isLive && isSelf && 'ring-white/25',
+          'flex h-full w-full items-center justify-center overflow-hidden rounded-full bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/12 transition-shadow duration-300',
+          isLive &&
+            !ringColor &&
+            'ring-[1.5px] ring-[var(--accent-ember)] ring-offset-[1.5px] ring-offset-[var(--bg-canvas)]',
+          !isLive && !ringColor && isSelf && 'ring-white/25',
         )}
       >
         {imageUrl && !imgFailed ? (
@@ -114,7 +128,7 @@ export function UserAvatar({
         ) : (
           <span
             className={cn(
-              'flex h-full w-full items-center justify-center font-medium leading-none tracking-tight',
+              'flex h-full w-full items-center justify-center font-semibold leading-none tracking-tight',
               cfg.text,
               paletteClass,
             )}

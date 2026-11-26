@@ -4,57 +4,51 @@
   :root {
     color-scheme: dark;
 
-    /* Obsidian Studio — Quiet, matte dark surfaces */
-    --bg-rail: #0a0a0c;
-    --bg-canvas: #0f0f12;
-    --bg-surface: #151519;
-    --bg-panel: #151519;
-    --bg-inset: #121216;
-    --bg-elevated: #1c1c22;
-    --bg-hover: rgba(255, 255, 255, 0.045);
-    --bg-active: rgba(255, 255, 255, 0.085);
-    --bg-popover: #1a1a20;
+    /* True Deep Obsidian — Rich pitch-dark desktop surfaces (never washed-out gray) */
+    --bg-rail: #000000;
+    --bg-canvas: #09090b;
+    --bg-surface: #111114;
+    --bg-panel: #111114;
+    --bg-inset: #0c0c0f;
+    --bg-elevated: #18181d;
+    --bg-hover: rgba(255, 255, 255, 0.055);
+    --bg-active: rgba(255, 255, 255, 0.1);
+    --bg-popover: #16161b;
 
     /* Crisp hairlines */
-    --border-subtle: rgba(255, 255, 255, 0.07);
-    --border-strong: rgba(255, 255, 255, 0.14);
-    --border-focus: rgba(255, 255, 255, 0.28);
-    --border-accent: rgba(232, 139, 90, 0.38);
-    --border-active: rgba(255, 255, 255, 0.22);
+    --border-subtle: rgba(255, 255, 255, 0.075);
+    --border-strong: rgba(255, 255, 255, 0.15);
+    --border-focus: rgba(255, 255, 255, 0.32);
+    --border-accent: rgba(232, 139, 90, 0.42);
+    --border-active: rgba(255, 255, 255, 0.24);
 
-    /* Ink */
-    --ink-primary: #f4f4f6;
-    --ink-secondary: #a1a1aa;
-    --ink-muted: #6e6e78;
-    --ink-on-accent: #09090b;
+    /* High-contrast crisp ink */
+    --ink-primary: #ffffff;
+    --ink-secondary: #b3b3bd;
+    --ink-muted: #747480;
+    --ink-on-accent: #050507;
 
-    /* Restrained accents — monochrome primary + warm studio ember */
+    /* Dynamic & default accents */
     --accent-primary: #e88b5a;
-    --accent-hover: #f09e72;
+    --accent-hover: #f39e70;
     --accent-muted: #b5653d;
-    --accent-soft: rgba(232, 139, 90, 0.14);
+    --accent-soft: rgba(232, 139, 90, 0.18);
     --accent-ember: #e88b5a;
-    --accent-ember-soft: rgba(232, 139, 90, 0.14);
+    --accent-ember-soft: rgba(232, 139, 90, 0.18);
     --accent-blue: #7aa2f7;
-    --accent-sage: #86b89a;
-    --accent-cta: #fafafa;
-    --accent-cta-hover: #e4e4e7;
+    --accent-sage: #7ed09e;
+    --accent-cta: #ffffff;
+    --accent-cta-hover: #e6e6eb;
 
     /* Semantic status */
-    --danger: #e56b6f;
-    --danger-soft: rgba(229, 107, 111, 0.14);
-    --warning: #e5a952;
-    --warning-soft: rgba(229, 169, 82, 0.14);
+    --danger: #f06a70;
+    --danger-soft: rgba(240, 106, 112, 0.16);
+    --warning: #efb356;
+    --warning-soft: rgba(239, 179, 86, 0.16);
     --spotify: #1db954;
 
-    /* Legacy token aliases for smooth transition */
-    --accent-moss: #86b89a;
-    --accent-sage-alias: #86b89a;
-    --accent-amber: #e5a952;
-    --accent-rust: #e56b6f;
-
     /* Radii */
-    --radius-card: 12px;
+    --radius-card: 10px;
     --radius-control: 8px;
     --radius-pill: 9999px;
     --radius-avatar: 9999px;
@@ -67,23 +61,23 @@
     /* Charts */
     --chart-1: #e88b5a;
     --chart-2: #7aa2f7;
-    --chart-3: #86b89a;
-    --chart-grid: rgba(255, 255, 255, 0.055);
-    --chart-axis: #71717a;
-    --chart-tooltip-bg: #1c1c22;
-    --chart-tooltip-border: rgba(255, 255, 255, 0.12);
+    --chart-3: #7ed09e;
+    --chart-grid: rgba(255, 255, 255, 0.06);
+    --chart-axis: #848490;
+    --chart-tooltip-bg: #16161b;
+    --chart-tooltip-border: rgba(255, 255, 255, 0.14);
 
-    /* 5-level Heatmap Scale — warm studio ember */
-    --heat-0: #17171c;
-    --heat-1: #30211b;
-    --heat-2: #5c3727;
-    --heat-3: #a35a38;
-    --heat-4: #e88b5a;
+    /* 5-level Heatmap Scale */
+    --heat-0: #131318;
+    --heat-1: #352119;
+    --heat-2: #683825;
+    --heat-3: #b05c35;
+    --heat-4: #f0925e;
 
-    /* Clean depth shadows (never neon, never offset) */
+    /* Clean shadows */
     --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-    --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    --shadow-art: 0 10px 28px rgba(0, 0, 0, 0.48);
+    --shadow-popover: 0 18px 48px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.09);
+    --shadow-art: 0 18px 46px rgba(0, 0, 0, 0.65);
   }
 
   * {
@@ -101,12 +95,9 @@
   }
 }
 
-/* =========================================================================
-   Typography Utilities
-   ========================================================================= */
 .font-display {
   font-family: var(--font-heading);
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
 }
 
 .font-body {
@@ -122,9 +113,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* =========================================================================
-   Clean Surface Primitives
-   ========================================================================= */
 .bside-card {
   background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
@@ -146,7 +134,7 @@
 
 .bside-card-interactive:hover {
   border-color: var(--border-strong);
-  background-color: #19191f;
+  background-color: #16161b;
 }
 
 .bside-card-interactive:active {
@@ -163,16 +151,17 @@
 }
 
 .tactile-press {
-  transition: transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  transition:
+    transform 110ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
 }
 
 .tactile-press:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-/* =========================================================================
-   Subtle, Intentional Motion
-   ========================================================================= */
 @keyframes bsideFadeUp {
   from {
     opacity: 0;
@@ -199,38 +188,36 @@
   }
 }
 
-/* Quiet 3-bar audio level animation (calm, non-flickering) */
 @keyframes audioBar1 {
-  0%, 100% { transform: scaleY(0.35); }
-  50% { transform: scaleY(0.95); }
+  0%, 100% { transform: scaleY(0.32); }
+  50% { transform: scaleY(0.98); }
 }
 
 @keyframes audioBar2 {
-  0%, 100% { transform: scaleY(0.85); }
-  50% { transform: scaleY(0.3); }
+  0%, 100% { transform: scaleY(0.9); }
+  50% { transform: scaleY(0.28); }
 }
 
 @keyframes audioBar3 {
-  0%, 100% { transform: scaleY(0.5); }
+  0%, 100% { transform: scaleY(0.48); }
   50% { transform: scaleY(1); }
 }
 
 .animate-audio-bar-1 {
   transform-origin: bottom;
-  animation: audioBar1 1.15s ease-in-out infinite;
+  animation: audioBar1 1.05s ease-in-out infinite;
 }
 
 .animate-audio-bar-2 {
   transform-origin: bottom;
-  animation: audioBar2 0.92s ease-in-out infinite;
+  animation: audioBar2 0.85s ease-in-out infinite;
 }
 
 .animate-audio-bar-3 {
   transform-origin: bottom;
-  animation: audioBar3 1.28s ease-in-out infinite;
+  animation: audioBar3 1.2s ease-in-out infinite;
 }
 
-/* Reduced motion support */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -242,7 +229,6 @@
   }
 }
 
-/* Subtle native scrollbars */
 ::-webkit-scrollbar {
   width: 7px;
   height: 7px;
@@ -253,14 +239,14 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.11);
+  background: rgba(255, 255, 255, 0.14);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.26);
   border: 2px solid transparent;
   background-clip: content-box;
 }

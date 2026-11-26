@@ -4,6 +4,7 @@ import { UserAvatar } from '@/components/UserAvatar';
 import { PixelEq } from '@/components/PixelEq';
 import { Button } from '@/components/ui/button';
 import { PopoverSurface } from '@/components/ui/popover';
+import { useCoverAccent } from '@/lib/extractColor';
 import { cn } from '@/lib/utils';
 import type { AccountProfile, LiveFriendItem } from '@/types/api';
 
@@ -133,6 +134,7 @@ export function AccountBadge({
 
   const displayName = profile.display_name || profile.username;
   const isListening = Boolean(liveItem?.playing);
+  const livePalette = useCoverAccent(liveItem?.cover_url, liveItem?.track_uri || liveItem?.track_name);
   const profileUrl = `https://open.spotify.com/user/${encodeURIComponent(profile.username)}`;
 
   return (
@@ -159,6 +161,7 @@ export function AccountBadge({
           size={layout === 'sidebar' ? 'md' : 'sm'}
           isSelf
           isLive={isListening}
+          ringColor={isListening ? livePalette.accent : undefined}
         />
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-medium text-[var(--ink-primary)]">
@@ -168,7 +171,7 @@ export function AccountBadge({
             <div className="mt-0.5 flex items-center gap-1.5 truncate text-[11px] text-[var(--ink-muted)]">
               {isListening ? (
                 <>
-                  <PixelEq active className="h-2.5 shrink-0" />
+                  <PixelEq active color={livePalette.accent} className="h-2.5 shrink-0" />
                   <span className="truncate text-[var(--ink-secondary)]">{liveItem?.track_name}</span>
                 </>
               ) : (

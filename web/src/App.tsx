@@ -28,23 +28,25 @@ import { PlaylistsTab } from '@/components/tabs/PlaylistsTab';
 import { OverlapTab } from '@/components/tabs/OverlapTab';
 import { ProfilesTab } from '@/components/tabs/ProfilesTab';
 import { useLiveFeed } from '@/hooks/useLiveFeed';
+import { useCoverAccent } from '@/lib/extractColor';
 import { cn } from '@/lib/utils';
 import type {
   AccountProfile,
   AvatarMap,
   FriendSummary,
+  LiveFriendItem,
   TimeframeKey,
 } from '@/types/api';
 
 type NavKey = 'live' | 'overview' | 'history' | 'playlists' | 'overlap' | 'profiles';
 
-const NAV_ITEMS: { key: NavKey; label: string; icon: typeof Radio; title: string }[] = [
-  { key: 'live', label: 'Live', icon: Radio, title: 'Listening now' },
-  { key: 'overview', label: 'Overview', icon: BarChart3, title: 'Overview' },
-  { key: 'history', label: 'History', icon: Clock, title: 'Listening history' },
-  { key: 'playlists', label: 'Playlists', icon: ListMusic, title: 'Playlists & contexts' },
-  { key: 'overlap', label: 'Overlap', icon: GitCompare, title: 'Taste overlap' },
-  { key: 'profiles', label: 'Friends', icon: Users, title: 'Friends & profiles' },
+const NAV_ITEMS: { key: NavKey; label: string; icon: typeof Radio }[] = [
+  { key: 'live', label: 'Live', icon: Radio },
+  { key: 'overview', label: 'Overview', icon: BarChart3 },
+  { key: 'history', label: 'History', icon: Clock },
+  { key: 'playlists', label: 'Playlists', icon: ListMusic },
+  { key: 'overlap', label: 'Overlap', icon: GitCompare },
+  { key: 'profiles', label: 'Friends', icon: Users },
 ];
 
 const TIMEFRAMES: { key: TimeframeKey; label: string }[] = [
@@ -53,6 +55,52 @@ const TIMEFRAMES: { key: TimeframeKey; label: string }[] = [
   { key: '90', label: '90d' },
   { key: 'all', label: 'All' },
 ];
+
+function SidebarLiveRow({
+  friend,
+  avatarUrl,
+  isSelected,
+  onClick,
+}: {
+  friend: LiveFriendItem;
+  avatarUrl: string | null;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
+  const palette = useCoverAccent(friend.cover_url, friend.track_uri || friend.track_name);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${friend.user_name} · ${friend.track_name}`}
+      className={cn(
+        'tactile-press group flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition-colors cursor-pointer',
+        isSelected ? 'bg-white/[0.11] text-white' : 'hover:bg-white/[0.055]',
+      )}
+    >
+      <UserAvatar
+        name={friend.user_name}
+        imageUrl={avatarUrl}
+        size="sm"
+        isLive
+        isSelf={friend.is_self}
+        ringColor={palette.accent}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-1.5">
+          <span className="truncate text-xs font-medium text-white">
+            {friend.user_name}
+          </span>
+          <PixelEq active color={palette.accent} className="h-2.5 shrink-0" />
+        </div>
+        <div className="truncate text-[11px] text-[var(--ink-muted)] group-hover:text-[var(--ink-secondary)]">
+          {friend.track_name}
+        </div>
+      </div>
+    </button>
+  );
+}
 
 export function App() {
   const [activeTab, setActiveTab] = useState<NavKey>('live');
@@ -295,7 +343,10 @@ export function App() {
     ? liveFriends.length
     : friends.filter((f) => f.is_live).length;
 
-  const currentNavMeta = NAV_ITEMS.find((item) => item.key === activeTab) ?? NAV_ITEMS[0];
+  const primaryLiveAccent = useCoverAccent(
+    liveFriends[0]?.cover_url,
+    liveFriends[0]?.track_uri || liveFriends[0]?.track_name,
+  );
 
   const connectionSubtitle = useMemo(() => {
     if (!live.snapshot) return 'Archive';
@@ -311,7 +362,7 @@ export function App() {
   const sidebarContent = (
     <div className="flex h-full flex-col bg-[var(--bg-rail)]">
       {/* Brand Header */}
-      <div className="flex h-[52px] shrink-0 items-center justify-between px-4">
+      <div className="flex h-[54px] shrink-0 items-center justify-between px-4">
         <button
           type="button"
           onClick={() => {
@@ -320,10 +371,17 @@ export function App() {
           }}
           className="flex items-center gap-2 text-left transition-opacity hover:opacity-85 cursor-pointer"
         >
-          <span className="font-display text-[17px] font-semibold tracking-[-0.03em] text-[var(--ink-primary)]">
+          <span className="font-display text-[18px] font-bold tracking-[-0.035em] text-white">
             bside
           </span>
-          <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-ember)]" aria-hidden="true" />
+          <span
+            className="h-1.5 w-1.5 rounded-full transition-colors duration-500"
+            style={{
+              backgroundColor:
+                liveSpinningCount > 0 ? primaryLiveAccent.accent : 'var(--accent-ember)',
+            }}
+            aria-hidden="true"
+          />
         </button>
 
         <span className="text-[11px] font-medium text-[var(--ink-muted)]">
@@ -332,7 +390,7 @@ export function App() {
       </div>
 
       {/* Primary Navigation */}
-      <nav aria-label="Primary" className="px-2.5 pt-2">
+      <nav aria-label="Primary" className="px-2.5 pt-1">
         <div className="space-y-0.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -348,26 +406,29 @@ export function App() {
                 className={cn(
                   'relative flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-[13px] font-medium transition-colors cursor-pointer select-none',
                   isActive
-                    ? 'text-[var(--ink-primary)]'
-                    : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
+                    ? 'text-white'
+                    : 'text-[var(--ink-secondary)] hover:bg-white/[0.05] hover:text-white',
                 )}
               >
                 {isActive && (
                   <motion.span
                     layoutId="sidebar-nav-pill"
                     transition={SPRING_SNAPPY}
-                    className="absolute inset-0 rounded-[8px] bg-[var(--bg-active)]"
+                    className="absolute inset-0 rounded-[8px] bg-white/[0.11]"
                   />
                 )}
                 <Icon
                   className={cn(
                     'relative z-10 h-4 w-4 shrink-0 transition-colors',
-                    isActive ? 'text-[var(--ink-primary)]' : 'text-[var(--ink-muted)]',
+                    isActive ? 'text-white' : 'text-[var(--ink-muted)]',
                   )}
                 />
                 <span className="relative z-10 flex-1 text-left">{item.label}</span>
                 {item.key === 'live' && liveSpinningCount > 0 && (
-                  <span className="relative z-10 tabular-nums text-[11px] font-medium text-[var(--accent-ember)]">
+                  <span
+                    className="relative z-10 tabular-nums text-[11px] font-semibold"
+                    style={{ color: primaryLiveAccent.accent }}
+                  >
                     {liveSpinningCount}
                   </span>
                 )}
@@ -392,68 +453,43 @@ export function App() {
 
         <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
           {liveFriends.length === 0 ? (
-            <div className="rounded-[8px] px-2.5 py-3 text-[11.5px] leading-relaxed text-[var(--ink-muted)]">
-              Quiet right now. Friends spinning tracks will appear here.
+            <div className="px-2.5 py-3 text-[11.5px] leading-relaxed text-[var(--ink-muted)]">
+              Quiet right now. Active listeners appear here.
             </div>
           ) : (
             liveFriends.map((friend) => {
               const isSelected =
                 selectedUsers.length === 1 && selectedUsers[0] === friend.user_uri;
               return (
-                <button
+                <SidebarLiveRow
                   key={friend.user_uri}
-                  type="button"
+                  friend={friend}
+                  avatarUrl={
+                    friend.user_image_url ??
+                    lookupAvatar(avatarMap, friend.user_uri, friend.user_name)
+                  }
+                  isSelected={isSelected}
                   onClick={() => {
                     handleFilterByUser(friend.user_uri);
                     setActiveTab('live');
                     setMobileNavOpen(false);
                   }}
-                  title={`Filter by ${friend.user_name} · ${friend.track_name}`}
-                  className={cn(
-                    'tactile-press group flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition-colors cursor-pointer',
-                    isSelected
-                      ? 'bg-[var(--bg-active)] text-[var(--ink-primary)]'
-                      : 'hover:bg-[var(--bg-hover)]',
-                  )}
-                >
-                  <UserAvatar
-                    name={friend.user_name}
-                    imageUrl={
-                      friend.user_image_url ??
-                      lookupAvatar(avatarMap, friend.user_uri, friend.user_name)
-                    }
-                    size="sm"
-                    isLive
-                    isSelf={friend.is_self}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span className="truncate text-xs font-medium text-[var(--ink-primary)]">
-                        {friend.user_name}
-                      </span>
-                      <PixelEq active className="h-2.5 shrink-0 opacity-80" />
-                    </div>
-                    <div className="truncate text-[11px] text-[var(--ink-muted)] group-hover:text-[var(--ink-secondary)]">
-                      {friend.track_name}
-                    </div>
-                  </div>
-                </button>
+                />
               );
             })
           )}
         </div>
 
-        {/* Future Listen Along placeholder hint (subtle, non-intrusive) */}
         <div className="mt-2 px-2.5 pb-2">
-          <div className="flex items-center gap-2 rounded-[8px] border border-[var(--border-subtle)] bg-white/[0.02] px-2.5 py-2 text-[11px] text-[var(--ink-muted)]">
-            <Headphones className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
-            <span className="truncate">Listen along & deck soon</span>
+          <div className="flex items-center gap-2 rounded-[8px] border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-[11px] text-[var(--ink-muted)]">
+            <Headphones className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Listen along & player soon</span>
           </div>
         </div>
       </div>
 
       {/* Account Footer */}
-      <div className="shrink-0 border-t border-[var(--border-subtle)] p-2.5">
+      <div className="shrink-0 border-t border-white/[0.07] p-2.5">
         <AccountBadge
           profile={accountProfile}
           liveItem={selfLiveItem}
@@ -465,12 +501,15 @@ export function App() {
     </div>
   );
 
+  // Playlists uses an internal full-height split scroll; other tabs scroll smoothly as one full-bleed stage
+  const isSplitViewport = activeTab === 'playlists';
+
   return (
     <MotionConfig reducedMotion="user">
       <TooltipProvider delayDuration={180}>
         <div className="flex h-screen w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--ink-primary)]">
-          {/* Desktop Left Rail */}
-          <aside className="hidden w-[236px] shrink-0 border-r border-[var(--border-subtle)] lg:block">
+          {/* Desktop Pitch-Black Left Rail */}
+          <aside className="hidden w-[236px] shrink-0 border-r border-white/[0.07] lg:block">
             {sidebarContent}
           </aside>
 
@@ -484,14 +523,14 @@ export function App() {
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.16 }}
                   onClick={() => setMobileNavOpen(false)}
-                  className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs lg:hidden"
+                  className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs lg:hidden"
                 />
                 <motion.aside
                   initial={{ x: -252 }}
                   animate={{ x: 0 }}
                   exit={{ x: -252 }}
                   transition={{ duration: 0.22, ease: EASE_OUT_EXPO }}
-                  className="fixed inset-y-0 left-0 z-50 w-[252px] border-r border-[var(--border-subtle)] lg:hidden"
+                  className="fixed inset-y-0 left-0 z-50 w-[252px] border-r border-white/[0.08] lg:hidden"
                 >
                   {sidebarContent}
                 </motion.aside>
@@ -499,22 +538,69 @@ export function App() {
             )}
           </AnimatePresence>
 
-          {/* Right Workspace Column */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            {/* Slim Sticky Utility Header */}
-            <header className="z-20 flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-canvas)]/90 px-4 backdrop-blur-md sm:px-6">
-              <div className="flex min-w-0 items-center gap-2.5">
+          {/* Full-Bleed Right Workspace */}
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-canvas)]">
+            {/* Single Unified Translucent Utility Bar (ZERO duplicate page title) */}
+            <header className="z-30 flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-[#09090b]/80 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setMobileNavOpen(true)}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] text-[var(--ink-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)] lg:hidden cursor-pointer"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[var(--ink-secondary)] hover:bg-white/[0.06] hover:text-white lg:hidden cursor-pointer"
                   aria-label="Open navigation"
                 >
                   <Menu className="h-4 w-4" />
                 </button>
-                <h1 className="truncate font-display text-[15px] font-semibold tracking-[-0.02em] text-[var(--ink-primary)]">
-                  {currentNavMeta.title}
-                </h1>
+
+                {/* Active friend filters live inline in the top utility bar — zero extra banner row */}
+                <AnimatePresence initial={false}>
+                  {selectedUsers.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -6 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -6 }}
+                      transition={{ duration: 0.15 }}
+                      className="flex min-w-0 items-center gap-1.5 overflow-x-auto"
+                    >
+                      {selectedFriendObjects.map((friend) => (
+                        <span
+                          key={friend.user_uri}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/[0.09] py-0.5 pr-1.5 pl-1 text-xs font-medium text-white"
+                        >
+                          <UserAvatar
+                            name={friend.user_name}
+                            imageUrl={friend.image_url}
+                            size="xs"
+                            isLive={friend.is_live}
+                            isSelf={friend.is_self}
+                          />
+                          <span className="max-w-[120px] truncate">{friend.user_name}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedUsers((prev) =>
+                                prev.filter((u) => u !== friend.user_uri),
+                              )
+                            }
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
+                            aria-label={`Remove ${friend.user_name} from filter`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                      {selectedUsers.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedUsers([])}
+                          className="shrink-0 px-1.5 text-[11px] font-medium text-[var(--ink-muted)] hover:text-white cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
 
               {/* Global Controls */}
@@ -525,7 +611,6 @@ export function App() {
                   onChange={setSelectedUsers}
                 />
 
-                {/* Sliding Timeframe Control */}
                 <InfoTooltip
                   content="Scopes analytics, history, playlists, overlap, and profile changes."
                   side="bottom"
@@ -533,7 +618,7 @@ export function App() {
                   <div
                     role="group"
                     aria-label="Timeframe"
-                    className="inline-flex h-8 items-center rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] p-0.5"
+                    className="inline-flex h-8 items-center rounded-[8px] bg-white/[0.05] p-0.5 ring-1 ring-inset ring-white/[0.07]"
                   >
                     {TIMEFRAMES.map((tf) => {
                       const active = timeframe === tf.key;
@@ -545,7 +630,7 @@ export function App() {
                           className={cn(
                             'relative h-full rounded-[6px] px-2.5 text-[11.5px] font-medium transition-colors cursor-pointer select-none',
                             active
-                              ? 'text-[var(--ink-primary)]'
+                              ? 'text-white'
                               : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]',
                           )}
                         >
@@ -553,7 +638,7 @@ export function App() {
                             <motion.span
                               layoutId="timeframe-pill"
                               transition={SPRING_SNAPPY}
-                              className="absolute inset-0 rounded-[6px] bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/[0.08]"
+                              className="absolute inset-0 rounded-[6px] bg-white/[0.13]"
                             />
                           )}
                           <span className="relative z-10">{tf.label}</span>
@@ -563,12 +648,11 @@ export function App() {
                   </div>
                 </InfoTooltip>
 
-                {/* Auto-refresh subtle icon button */}
                 <InfoTooltip
                   content={
                     autoRefresh
-                      ? 'Auto-refreshing analytics every 30s (click to pause)'
-                      : 'Enable 30s auto-refresh for analytics'
+                      ? 'Auto-refreshing every 30s (click to pause)'
+                      : 'Enable 30s auto-refresh'
                   }
                   side="bottom"
                 >
@@ -583,10 +667,9 @@ export function App() {
                   </Button>
                 </InfoTooltip>
 
-                {/* Manual Refresh */}
                 <InfoTooltip content="Sync now and refresh data" side="bottom">
                   <Button
-                    variant="secondary"
+                    variant="ghost"
                     size="icon"
                     onClick={triggerRefresh}
                     aria-label="Refresh"
@@ -602,157 +685,104 @@ export function App() {
               </div>
             </header>
 
-            {/* Scrollable Workspace Canvas */}
-            <main className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-[1220px] px-4 py-6 sm:px-7">
-                {/* Active Friend Filter Strip */}
-                <AnimatePresence initial={false}>
-                  {selectedUsers.length > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0, marginBottom: 0 }}
-                      animate={{ opacity: 1, height: 'auto', marginBottom: 20 }}
-                      exit={{ opacity: 0, height: 0, marginBottom: 0 }}
-                      transition={{ duration: 0.18, ease: EASE_OUT_EXPO }}
-                      className="overflow-hidden"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="mr-1 text-xs text-[var(--ink-muted)]">
-                            Filtered to
-                          </span>
-                          {selectedFriendObjects.map((friend) => (
-                            <span
-                              key={friend.user_uri}
-                              className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] py-0.5 pr-1.5 pl-1 text-xs font-medium text-[var(--ink-primary)]"
-                            >
-                              <UserAvatar
-                                name={friend.user_name}
-                                imageUrl={friend.image_url}
-                                size="xs"
-                                isLive={friend.is_live}
-                                isSelf={friend.is_self}
-                              />
-                              <span className="max-w-[140px] truncate">{friend.user_name}</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setSelectedUsers((prev) =>
-                                    prev.filter((u) => u !== friend.user_uri),
-                                  )
-                                }
-                                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)] cursor-pointer"
-                                aria-label={`Remove ${friend.user_name} from filter`}
-                              >
-                                <X className="h-3 w-3" />
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedUsers([])}
-                          className="text-xs font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-primary)] cursor-pointer"
-                        >
-                          Clear all
-                        </button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+            {/* Full-Bleed View Stage (NO centered max-w webpage container!) */}
+            <main
+              className={cn(
+                'min-h-0 flex-1 w-full',
+                isSplitViewport ? 'overflow-hidden' : 'overflow-y-auto',
+              )}
+            >
+              <AnimatePresence mode="wait">
+                {activeTab === 'live' && (
+                  <PageTransition key="live" className="w-full">
+                    <LiveNowSection
+                      live={live}
+                      mode="full"
+                      selectedUsers={selectedUsers}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
 
-                {/* Animated View Container */}
-                <AnimatePresence mode="wait">
-                  {activeTab === 'live' && (
-                    <PageTransition key="live">
-                      <LiveNowSection
-                        live={live}
-                        mode="full"
-                        selectedUsers={selectedUsers}
-                        avatarMap={avatarMap}
-                        onSelectPlaylist={handleSelectPlaylist}
-                        onFilterByUser={handleFilterByUser}
-                      />
-                    </PageTransition>
-                  )}
+                {activeTab === 'overview' && (
+                  <PageTransition key="overview" className="w-full">
+                    <OverviewTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                      liveStrip={
+                        <LiveNowSection
+                          live={live}
+                          mode="compact"
+                          selectedUsers={selectedUsers}
+                          avatarMap={avatarMap}
+                          onOpenFull={() => setActiveTab('live')}
+                          onSelectPlaylist={handleSelectPlaylist}
+                          onFilterByUser={handleFilterByUser}
+                        />
+                      }
+                    />
+                  </PageTransition>
+                )}
 
-                  {activeTab === 'overview' && (
-                    <PageTransition key="overview">
-                      <OverviewTab
-                        selectedUsers={selectedUsers}
-                        days={days}
-                        refreshTick={refreshTick}
-                        avatarMap={avatarMap}
-                        onSelectPlaylist={handleSelectPlaylist}
-                        onFilterByUser={handleFilterByUser}
-                        liveStrip={
-                          <LiveNowSection
-                            live={live}
-                            mode="compact"
-                            selectedUsers={selectedUsers}
-                            avatarMap={avatarMap}
-                            onOpenFull={() => setActiveTab('live')}
-                            onSelectPlaylist={handleSelectPlaylist}
-                            onFilterByUser={handleFilterByUser}
-                          />
-                        }
-                      />
-                    </PageTransition>
-                  )}
+                {activeTab === 'history' && (
+                  <PageTransition key="history" className="w-full">
+                    <HistoryTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
 
-                  {activeTab === 'history' && (
-                    <PageTransition key="history">
-                      <HistoryTab
-                        selectedUsers={selectedUsers}
-                        days={days}
-                        refreshTick={refreshTick}
-                        avatarMap={avatarMap}
-                        onSelectPlaylist={handleSelectPlaylist}
-                        onFilterByUser={handleFilterByUser}
-                      />
-                    </PageTransition>
-                  )}
+                {activeTab === 'playlists' && (
+                  <PageTransition key="playlists" className="h-full w-full">
+                    <PlaylistsTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      liveSnapshot={live.snapshot}
+                      avatarMap={avatarMap}
+                      focusedContextUri={focusedContextUri}
+                      onClearFocusedContext={() => setFocusedContextUri(null)}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
 
-                  {activeTab === 'playlists' && (
-                    <PageTransition key="playlists">
-                      <PlaylistsTab
-                        selectedUsers={selectedUsers}
-                        days={days}
-                        refreshTick={refreshTick}
-                        liveSnapshot={live.snapshot}
-                        avatarMap={avatarMap}
-                        focusedContextUri={focusedContextUri}
-                        onClearFocusedContext={() => setFocusedContextUri(null)}
-                        onFilterByUser={handleFilterByUser}
-                      />
-                    </PageTransition>
-                  )}
+                {activeTab === 'overlap' && (
+                  <PageTransition key="overlap" className="w-full">
+                    <OverlapTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
 
-                  {activeTab === 'overlap' && (
-                    <PageTransition key="overlap">
-                      <OverlapTab
-                        selectedUsers={selectedUsers}
-                        days={days}
-                        refreshTick={refreshTick}
-                        avatarMap={avatarMap}
-                        onFilterByUser={handleFilterByUser}
-                      />
-                    </PageTransition>
-                  )}
-
-                  {activeTab === 'profiles' && (
-                    <PageTransition key="profiles">
-                      <ProfilesTab
-                        selectedUsers={selectedUsers}
-                        days={days}
-                        refreshTick={refreshTick}
-                        avatarMap={avatarMap}
-                        onSelectPlaylist={handleSelectPlaylist}
-                        onFilterByUser={handleFilterByUser}
-                      />
-                    </PageTransition>
-                  )}
-                </AnimatePresence>
-              </div>
+                {activeTab === 'profiles' && (
+                  <PageTransition key="profiles" className="w-full">
+                    <ProfilesTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+              </AnimatePresence>
             </main>
           </div>
         </div>
