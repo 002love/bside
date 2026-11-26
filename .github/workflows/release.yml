@@ -2,53 +2,188 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
+      bump:
+        description: "Version bump type (auto inspects Conventional Commits since last tag)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
       tag:
-        description: "Release tag to build and publish (e.g. v0.1.0). Defaults to the current ref or Cargo.toml version."
+        description: "Explicit release version or tag (e.g. v1.0.0). Overrides bump."
         required: false
         type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   prepare:
-    name: Prepare release metadata
+    name: Prepare release & version
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
+      skip: ${{ steps.meta.outputs.skip }}
       tag: ${{ steps.meta.outputs.tag }}
+      ref: ${{ steps.meta.outputs.ref }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve release tag
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve version, bump & tag
         id: meta
         shell: bash
         env:
-          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_BUMP: ${{ inputs.bump || 'auto' }}
+          INPUT_TAG: ${{ inputs.tag || '' }}
         run: |
-          if [ -n "${INPUT_TAG}" ]; then
-            TAG="${INPUT_TAG}"
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          set -euo pipefail
+
+          # Case 1: Triggered directly by pushing a v* tag
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+            echo "Building existing tag: ${TAG}"
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+            echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+            echo "ref=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Case 2: Push to main — skip if already tagged or docs-only since last tag
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            EXISTING_TAGS="$(git tag --points-at HEAD 'v*')"
+            if [[ -n "${EXISTING_TAGS}" ]]; then
+              echo "HEAD is already tagged (${EXISTING_TAGS}); skipping auto-release."
+              echo "skip=true" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            HEAD_SUBJECT="$(git log -1 --format=%s)"
+            if [[ "${HEAD_SUBJECT}" == chore\(release\):* ]]; then
+              echo "HEAD is a release bump commit; skipping auto-release."
+              echo "skip=true" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            LAST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)"
+            if [[ -n "${LAST_TAG}" ]]; then
+              CODE_CHANGES="$(git diff --name-only "${LAST_TAG}..HEAD" -- ':!*.md' ':!LICENSE' || true)"
+              if [[ -z "${CODE_CHANGES}" ]]; then
+                echo "Only documentation changed since ${LAST_TAG}; skipping auto-release."
+                echo "skip=true" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+            fi
+          fi
+
+          # Compute and write next version
+          ARGS=(scripts/bump-version.mjs --write --bump "${INPUT_BUMP}")
+          if [[ -n "${INPUT_TAG}" ]]; then
+            ARGS+=(--tag "${INPUT_TAG}")
+          fi
+
+          META_OUT="$(node "${ARGS[@]}")"
+          echo "${META_OUT}"
+          TAG="$(printf '%s\n' "${META_OUT}" | sed -n 's/^tag=//p')"
+          VERSION="$(printf '%s\n' "${META_OUT}" | sed -n 's/^version=//p')"
+
+          # If explicit tag already exists on dispatch, rebuild it as-is
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] && git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TAG_SHA="$(git rev-list -n 1 "${TAG}")"
+            echo "Rebuilding existing tag ${TAG} (${TAG_SHA})"
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+            echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+            echo "ref=${TAG_SHA}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          PRE_BUMP_SHA="$(git rev-parse HEAD)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet; then
+            git add Cargo.toml Cargo.lock src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json web/package.json
+            git commit -m "chore(release): ${TAG} [skip ci]"
+          fi
+
+          git tag -a "${TAG}" -m "Release ${TAG}"
+
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            git push origin HEAD:refs/heads/main
+            git push origin "${TAG}"
+
+            # Best-effort fast-forward dev branch so it stays synced with the bumped version
+            if git ls-remote --exit-code --heads origin dev >/dev/null 2>&1; then
+              git fetch origin dev:refs/remotes/origin/dev
+              if git merge-base --is-ancestor origin/dev "${PRE_BUMP_SHA}"; then
+                git push origin HEAD:refs/heads/dev || true
+              fi
+            fi
           else
-            VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-            TAG="v${VERSION}"
+            git push origin "${TAG}"
           fi
 
-          if [[ "${TAG}" != v* ]]; then
-            TAG="v${TAG}"
-          fi
-
-          echo "Resolved release tag: ${TAG}"
+          RELEASE_SHA="$(git rev-parse HEAD)"
+          echo "Created release tag ${TAG} at ${RELEASE_SHA}"
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
 
-  build:
-    name: Build (${{ matrix.asset_suffix }})
+  build-web:
+    name: Build Web UI
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build Web UI
+        working-directory: web
+        run: npm ci && npm run build
+
+      - name: Upload Web UI dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+
+  build-linux-cli:
+    name: Build Linux CLI (${{ matrix.asset_suffix }})
+    needs: [prepare, build-web]
+    if: needs.prepare.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -56,11 +191,94 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             asset_suffix: x86_64-linux
-            archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             asset_suffix: aarch64-linux
-            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download prebuilt Web UI
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive and checksum
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ARCHIVE="bside-${TAG}-${ASSET_SUFFIX}.tar.gz"
+          tar -czf "dist/${ARCHIVE}" -C "target/${TARGET}/release" bside
+          (
+            cd dist
+            sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+          )
+
+      - name: Upload Linux CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.asset_suffix }}
+          path: dist/*
+          retention-days: 1
+
+  publish-linux-release:
+    name: Publish Linux CLI (fast server deploy)
+    needs: [prepare, build-linux-cli]
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Linux CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*-linux
+          path: dist
+          merge-multiple: true
+
+      - name: Publish prerelease with Linux binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: bside ${{ needs.prepare.outputs.tag }}
+          prerelease: true
+          make_latest: "false"
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  build-other-cli:
+    name: Build CLI (${{ matrix.asset_suffix }})
+    needs: [prepare, build-web]
+    if: needs.prepare.outputs.skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           - target: x86_64-apple-darwin
             os: macos-latest
             asset_suffix: x86_64-macos
@@ -73,34 +291,18 @@ jobs:
             os: windows-latest
             asset_suffix: x86_64-windows
             archive: zip
-
     runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout repository
+      - name: Checkout release commit
         uses: actions/checkout@v4
-
-      - name: Check for Web UI
-        id: web_ui
-        shell: bash
-        run: |
-          if [ -f "web/package.json" ]; then
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-          fi
-
-      - name: Setup Node.js
-        if: steps.web_ui.outputs.exists == 'true'
-        uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          ref: ${{ needs.prepare.outputs.ref }}
 
-      - name: Build Web UI
-        if: steps.web_ui.outputs.exists == 'true'
-        shell: bash
-        working-directory: web
-        run: npm ci && npm run build
+      - name: Download prebuilt Web UI
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -155,15 +357,56 @@ jobs:
           $line = "$hash  $archive`n"
           [System.IO.File]::WriteAllText((Join-Path (Resolve-Path "dist") "$archive.sha256"), $line, [System.Text.UTF8Encoding]::new($false))
 
-      - name: Upload release artifact
+      - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bside-${{ matrix.asset_suffix }}
+          name: cli-${{ matrix.asset_suffix }}
           path: dist/*
+          retention-days: 1
+
+  publish-cli-release:
+    name: Promote GitHub Release to Latest (all CLI)
+    needs: [prepare, build-linux-cli, build-other-cli, publish-linux-release]
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate CLI SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          files=(*.tar.gz *.zip)
+          LC_ALL=C sha256sum "${files[@]}" | LC_ALL=C sort -k 2 > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Publish full CLI release as Latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: bside ${{ needs.prepare.outputs.tag }}
+          prerelease: false
+          make_latest: "true"
+          files: |
+            dist/*-macos.tar.gz
+            dist/*-macos.tar.gz.sha256
+            dist/*-windows.zip
+            dist/*-windows.zip.sha256
+            dist/SHA256SUMS.txt
 
   build-desktop:
     name: Build Desktop (${{ matrix.asset_suffix }})
-    needs: prepare
+    needs: [prepare, build-web]
+    if: needs.prepare.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -180,12 +423,18 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             asset_suffix: x86_64-linux
-
     runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout repository
+      - name: Checkout release commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Download prebuilt Web UI
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -204,13 +453,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build Web UI
-        shell: bash
-        working-directory: web
-        run: npm ci && npm run build
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -254,7 +496,10 @@ jobs:
         working-directory: src-tauri
         env:
           NO_STRIP: "true"
-        run: tauri build --target ${{ matrix.target }}
+        run: |
+          printf '{"build":{"beforeBuildCommand":"echo Using prebuilt web/dist"}}\n' > ci-override.json
+          tauri build --target ${{ matrix.target }} --config ci-override.json
+          rm -f ci-override.json
 
       - name: Collect desktop release assets
         shell: bash
@@ -293,19 +538,29 @@ jobs:
       - name: Upload desktop release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bside-desktop-${{ matrix.asset_suffix }}
+          name: desktop-${{ matrix.asset_suffix }}
           path: release-assets/*
+          retention-days: 1
 
-  release:
-    name: Publish GitHub Release
-    needs: [prepare, build, build-desktop]
+  publish-desktop-release:
+    name: Attach Desktop bundles to Release
+    needs: [prepare, build-linux-cli, build-other-cli, build-desktop, publish-cli-release]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all release artifacts
+      - name: Download CLI artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
           path: dist
           merge-multiple: true
 
@@ -319,19 +574,17 @@ jobs:
           LC_ALL=C sha256sum "${files[@]}" | LC_ALL=C sort -k 2 > SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
-      - name: Publish GitHub Release
+      - name: Upload desktop bundles & final checksums
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: bside ${{ needs.prepare.outputs.tag }}
-          generate_release_notes: true
+          prerelease: false
+          make_latest: "true"
           files: |
-            dist/*.tar.gz
-            dist/*.zip
             dist/*.dmg
             dist/*.msi
             dist/*-setup.exe
             dist/*.AppImage
             dist/*.deb
-            dist/*.sha256
             dist/SHA256SUMS.txt
