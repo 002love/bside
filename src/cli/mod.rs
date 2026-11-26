@@ -66,8 +66,8 @@ enum Commands {
         #[arg(long, default_value_t = 1800)]
         profile_interval: u64,
 
-        /// Maximum consecutive inferred repeat cycles per single continuous track play
-        #[arg(long, default_value_t = 10)]
+        /// Maximum consecutive timer-inferred repeat cycles per continuous track play (0 = disabled, recommended)
+        #[arg(long, default_value_t = 0)]
         max_inferred_repeats: u32,
 
         /// Transport mode: auto (Dealer WS -> Mercury -> HTTP poll), dealer, mercury, or poll
@@ -252,8 +252,8 @@ enum ServiceAction {
         #[arg(long, default_value_t = 1800)]
         profile_interval: u64,
 
-        /// Maximum consecutive inferred repeat cycles per single continuous track play
-        #[arg(long, default_value_t = 10)]
+        /// Maximum consecutive timer-inferred repeat cycles per continuous track play (0 = disabled, recommended)
+        #[arg(long, default_value_t = 0)]
         max_inferred_repeats: u32,
     },
 

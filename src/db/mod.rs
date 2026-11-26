@@ -17,7 +17,7 @@ use rusqlite::{Connection, types::Value as SqlValue};
 #[allow(unused_imports)]
 pub use contexts::{ContextListener, ContextSummary, RebuiltTrack};
 #[allow(unused_imports)]
-pub use listens::{FriendSummary, ListenRecord, PaginatedHistory, RepairReport};
+pub use listens::{FriendSummary, LatestUserListen, ListenRecord, PaginatedHistory, RepairReport};
 #[allow(unused_imports)]
 pub use overlap::{FriendPairOverlap, OverlapReport, SharedItem, TrendsetterTrack};
 #[allow(unused_imports)]

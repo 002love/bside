@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,7 @@ use crate::spotify::{
     connect_cached, enrich_activity, fetch_user_profile, login_oauth, open_cache,
     player as spotify_player, spawn_activity_stream_with_targets,
 };
+use crate::tracker::PlayTracker;
 
 const MIN_POLL_INTERVAL_SECS: u64 = 10;
 const DEFAULT_RESYNC_INTERVAL_SECS: u64 = 60;
@@ -47,7 +48,7 @@ const MANUAL_REFRESH_WAIT: Duration = Duration::from_secs(3);
 const SSE_KEEP_ALIVE_SECS: u64 = 15;
 const PROFILE_SYNC_INTERVAL: Duration = Duration::from_secs(1800);
 const OAUTH_LOGIN_TIMEOUT_SECS: u64 = 180;
-const MAX_INFERRED_REPEATS: u32 = 10;
+const MAX_INFERRED_REPEATS: u32 = 0;
 
 #[derive(Embed)]
 #[folder = "web/dist"]
@@ -1960,249 +1961,31 @@ fn enrich_own_context_from_db(db_path: &Path, activity: &mut FriendActivity) {
     }
 }
 
-struct ActivePlay {
-    track_uri: String,
-    cycle_started_at_ms: i64,
-    last_seen_ts_ms: i64,
-    duration_ms: Option<i64>,
-    inferred_cycles: u32,
-    is_playing: bool,
-    session_id: Option<i64>,
-    missed_polls: u32,
-}
-
-fn should_handle_as_same_play(
-    prev_was_playing: bool,
-    prev_cycle_started_at_ms: i64,
-    prev_last_seen_ts_ms: i64,
-    prev_duration_ms: Option<i64>,
-    item_playing: bool,
-    item_timestamp_ms: i64,
-    repeat_grace_ms: i64,
-) -> bool {
-    if !item_playing {
-        return true;
-    }
-
-    let elapsed_from_cycle = item_timestamp_ms.saturating_sub(prev_cycle_started_at_ms);
-    let ts_delta = item_timestamp_ms.saturating_sub(prev_last_seen_ts_ms);
-    let max_gap = prev_duration_ms
-        .filter(|&d| d > 0)
-        .map(|d| d + repeat_grace_ms)
-        .unwrap_or(0)
-        .max(300_000);
-
-    if !prev_was_playing {
-        return ts_delta < max_gap && elapsed_from_cycle < max_gap;
-    }
-
-    let within_track_window = match prev_duration_ms {
-        Some(d) if d > 0 => elapsed_from_cycle < d + repeat_grace_ms,
-        _ => elapsed_from_cycle < 180_000,
-    };
-    within_track_window && ts_delta < max_gap && elapsed_from_cycle < max_gap
-}
-
-fn process_single_db_activity(
-    db: &Database,
-    item: &FriendActivity,
-    active_plays: &mut HashMap<String, ActivePlay>,
-    now_ms: i64,
-    grace_ms: i64,
-) -> Result<String> {
-    let user_uri = item.user.uri.clone();
-
-    let same_track = active_plays
-        .get(&user_uri)
-        .is_some_and(|prev| prev.track_uri == item.track.uri);
-
-    let handle_as_same_play = if same_track {
-        let prev = active_plays.get(&user_uri).unwrap();
-        should_handle_as_same_play(
-            prev.is_playing,
-            prev.cycle_started_at_ms,
-            prev.last_seen_ts_ms,
-            prev.duration_ms,
-            item.playing,
-            item.timestamp,
-            grace_ms,
-        )
-    } else {
-        false
-    };
-
-    if !handle_as_same_play {
-        let mut session_id = None;
-        let prev_opt = active_plays.remove(&user_uri);
-        let had_active_play = prev_opt.is_some();
-
-        if let Some(prev) = prev_opt {
-            session_id = prev.session_id;
-            let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
-            if prev.is_playing {
-                let switched_to_next_track = prev.track_uri != item.track.uri;
-                let _ = db.finalize_play(
-                    &user_uri,
-                    &prev.track_uri,
-                    prev.cycle_started_at_ms,
-                    ended_at_ms,
-                    prev.duration_ms,
-                    switched_to_next_track,
-                );
-            }
-            if !item.playing
-                && let Some(sid) = session_id.take()
-            {
-                let _ = db.end_session(sid, ended_at_ms);
-            }
-        }
-
-        let skip_cold_start_last = !item.playing
-            && !had_active_play
-            && db
-                .has_recent_listen_near(
-                    &user_uri,
-                    &item.track.uri,
-                    item.timestamp,
-                    item.duration_ms().unwrap_or(0).max(180_000),
-                )
-                .unwrap_or(false);
-
-        if !skip_cold_start_last {
-            db.insert_listen(item)?;
-        }
-
-        if item.playing {
-            if let Some(sid) = session_id {
-                let _ = db.touch_session(sid, now_ms, true);
-            } else {
-                let start_ms = item.timestamp.min(now_ms);
-                if let Ok(sid) = db.start_session(&user_uri, &item.user.name, start_ms) {
-                    let _ = db.touch_session(sid, now_ms, true);
-                    session_id = Some(sid);
-                }
-            }
-        }
-
-        active_plays.insert(
-            user_uri.clone(),
-            ActivePlay {
-                track_uri: item.track.uri.clone(),
-                cycle_started_at_ms: item.timestamp,
-                last_seen_ts_ms: item.timestamp,
-                duration_ms: item.duration_ms(),
-                inferred_cycles: 0,
-                is_playing: item.playing,
-                session_id,
-                missed_polls: 0,
-            },
-        );
-    } else if let Some(prev) = active_plays.get_mut(&user_uri) {
-        prev.missed_polls = 0;
-        prev.last_seen_ts_ms = item.timestamp;
-
-        if prev.is_playing && !item.playing {
-            let ended_at_ms = item.timestamp.clamp(prev.cycle_started_at_ms, now_ms);
-            let _ = db.finalize_play(
-                &user_uri,
-                &prev.track_uri,
-                prev.cycle_started_at_ms,
-                ended_at_ms,
-                prev.duration_ms,
-                false,
-            );
-            if let Some(sid) = prev.session_id.take() {
-                let _ = db.end_session(sid, ended_at_ms);
-            }
-            prev.is_playing = false;
-        } else if !prev.is_playing && item.playing {
-            let _ = db.mark_playing_seen(&user_uri, &prev.track_uri, prev.cycle_started_at_ms);
-            if prev.session_id.is_none()
-                && let Ok(sid) = db.start_session(&user_uri, &item.user.name, now_ms)
-            {
-                prev.session_id = Some(sid);
-            }
-            prev.is_playing = true;
-        } else if prev.is_playing && item.playing {
-            if let Some(sid) = prev.session_id {
-                let _ = db.touch_session(sid, now_ms, false);
-            }
-
-            if let Some(dur) = prev.duration_ms
-                && dur >= 30_000
-                && prev.inferred_cycles < MAX_INFERRED_REPEATS
-                && (now_ms - prev.cycle_started_at_ms) >= dur + grace_ms
-            {
-                let cycle_end = prev.cycle_started_at_ms + dur;
-                let _ = db.finalize_play(
-                    &user_uri,
-                    &prev.track_uri,
-                    prev.cycle_started_at_ms,
-                    cycle_end,
-                    Some(dur),
-                    false,
-                );
-                prev.cycle_started_at_ms = cycle_end;
-                prev.last_seen_ts_ms = cycle_end;
-                prev.inferred_cycles += 1;
-
-                if db.insert_inferred_repeat(item, cycle_end).unwrap_or(false)
-                    && let Some(sid) = prev.session_id
-                {
-                    let _ = db.touch_session(sid, now_ms, true);
-                }
-            }
-        }
-    }
-
-    Ok(user_uri)
-}
-
 fn log_poll_activities_to_db(
     db_path: &Path,
-    activities: &[FriendActivity],
-    active_plays: &mut HashMap<String, ActivePlay>,
+    activities: Vec<FriendActivity>,
+    tracker: &mut PlayTracker,
     now_ms: i64,
-    grace_ms: i64,
     check_missed_polls: bool,
 ) -> Result<()> {
     let db = Database::open(db_path)?;
-    let mut seen_users: HashSet<String> = HashSet::new();
-
-    for item in activities {
-        let user_uri = process_single_db_activity(&db, item, active_plays, now_ms, grace_ms)?;
-        seen_users.insert(user_uri);
-    }
 
     if check_missed_polls {
-        for (user_uri, state) in active_plays.iter_mut() {
-            if !seen_users.contains(user_uri) && state.is_playing {
-                state.missed_polls += 1;
-                if state.missed_polls > 2 {
-                    let _ = db.finalize_play(
-                        user_uri,
-                        &state.track_uri,
-                        state.cycle_started_at_ms,
-                        now_ms,
-                        state.duration_ms,
-                        false,
-                    );
-                    if let Some(sid) = state.session_id.take() {
-                        let _ = db.end_session(sid, now_ms);
-                    }
-                    state.is_playing = false;
-                }
-            }
+        let _ = tracker.handle_full_snapshot(&db, activities, now_ms);
+    } else {
+        for item in activities {
+            let _ = tracker.handle_friend_updated(&db, item, now_ms);
         }
     }
 
+    let _ = tracker.check_maintenance(&db, now_ms);
     Ok(())
 }
 
 async fn log_activities_with_state(
     db_path: &Path,
     activities: Vec<FriendActivity>,
-    active_plays: &mut HashMap<String, ActivePlay>,
+    tracker: &mut PlayTracker,
     now_ms: i64,
     grace_ms: i64,
     check_missed_polls: bool,
@@ -2211,25 +1994,27 @@ async fn log_activities_with_state(
         return;
     }
     let db_path_clone = db_path.to_path_buf();
-    let mut plays_for_task = std::mem::take(active_plays);
+    let mut tracker_for_task = std::mem::replace(
+        tracker,
+        PlayTracker::new(Vec::new(), MAX_INFERRED_REPEATS, grace_ms),
+    );
     let log_res = tokio::task::spawn_blocking(move || {
         let res = log_poll_activities_to_db(
             &db_path_clone,
-            &activities,
-            &mut plays_for_task,
+            activities,
+            &mut tracker_for_task,
             now_ms,
-            grace_ms,
             check_missed_polls,
         );
-        (plays_for_task, res)
+        (tracker_for_task, res)
     })
     .await;
     match log_res {
-        Ok((returned_plays, Ok(()))) => {
-            *active_plays = returned_plays;
+        Ok((returned_tracker, Ok(()))) => {
+            *tracker = returned_tracker;
         }
-        Ok((returned_plays, Err(err))) => {
-            *active_plays = returned_plays;
+        Ok((returned_tracker, Err(err))) => {
+            *tracker = returned_tracker;
             eprintln!("[warn] Failed to log live listens to SQLite: {err:#}");
         }
         Err(err) => {
@@ -2238,24 +2023,30 @@ async fn log_activities_with_state(
     }
 }
 
-async fn close_open_sessions(db_path: &Path, active_plays: &mut HashMap<String, ActivePlay>) {
-    let session_ids: Vec<i64> = active_plays
-        .values_mut()
-        .filter_map(|state| state.session_id.take())
-        .collect();
-    if session_ids.is_empty() {
+async fn close_open_sessions(db_path: &Path, tracker: &mut PlayTracker, grace_ms: i64) {
+    if tracker
+        .active_plays()
+        .values()
+        .all(|state| state.session_id.is_none())
+    {
         return;
     }
     let db_path_owned = db_path.to_path_buf();
     let end_now_ms = Utc::now().timestamp_millis();
-    let _ = tokio::task::spawn_blocking(move || {
+    let mut tracker_for_task = std::mem::replace(
+        tracker,
+        PlayTracker::new(Vec::new(), MAX_INFERRED_REPEATS, grace_ms),
+    );
+    let res = tokio::task::spawn_blocking(move || {
         if let Ok(db) = Database::open(&db_path_owned) {
-            for sid in session_ids {
-                let _ = db.end_session(sid, end_now_ms);
-            }
+            tracker_for_task.close_all_sessions(&db, end_now_ms);
         }
+        tracker_for_task
     })
     .await;
+    if let Ok(returned) = res {
+        *tracker = returned;
+    }
 }
 
 fn build_sorted_live_friends(
@@ -2317,15 +2108,17 @@ async fn prepare_own_activity(
     own_session: Option<&librespot_core::session::Session>,
     own_name_cache: &mut NameCache,
     account_uri: Option<&str>,
-    active_plays: &HashMap<String, ActivePlay>,
+    play_tracker: &PlayTracker,
     db_path: &Path,
 ) -> Option<FriendActivity> {
     let mut own_activity = own_observer?.latest()?;
     if let Some(session) = own_session {
         enrich_activity(session, &mut own_activity, own_name_cache).await;
     }
-    if let Some(own_uri) = account_uri
-        && let Some(prev) = active_plays.get(own_uri)
+    if own_activity.playing
+        && let Some(own_uri) = account_uri
+        && let Some(prev) = play_tracker.active_plays().get(own_uri)
+        && prev.is_playing
         && prev.track_uri == own_activity.track.uri
         && (own_activity.timestamp - prev.cycle_started_at_ms).abs() <= 20_000
     {
@@ -2359,7 +2152,7 @@ fn spawn_live_stream(
 
     tokio::spawn(async move {
         let mut own_name_cache = NameCache::default();
-        let mut active_plays: HashMap<String, ActivePlay> = HashMap::new();
+        let mut play_tracker = PlayTracker::new(Vec::new(), MAX_INFERRED_REPEATS, grace_ms);
         let mut known_friend_uris: BTreeSet<String> = BTreeSet::new();
         let mut last_profile_sync: Option<Instant> = None;
 
@@ -2367,7 +2160,7 @@ fn spawn_live_stream(
             if *shutdown_rx.borrow() {
                 listen_along.handle_disconnect_or_logout().await;
                 player_hub.set_session(None).await;
-                close_open_sessions(&db_path, &mut active_plays).await;
+                close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
                 return;
             }
 
@@ -2385,8 +2178,8 @@ fn spawn_live_stream(
             if !has_credentials {
                 listen_along.handle_disconnect_or_logout().await;
                 player_hub.set_session(None).await;
-                close_open_sessions(&db_path, &mut active_plays).await;
-                active_plays.clear();
+                close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
+                play_tracker.clear();
                 live.set_account_profile(None).await;
                 let prev = live.snapshot().await;
                 if prev.status != "unauthenticated" || prev.connected || prev.account.is_some() {
@@ -2556,7 +2349,7 @@ fn spawn_live_stream(
                     let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
                     listen_along.handle_disconnect_or_logout().await;
                     player_hub.set_session(None).await;
-                    close_open_sessions(&db_path, &mut active_plays).await;
+                    close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
                     if let Some(obs) = own_observer.take() {
                         obs.shutdown().await;
                     }
@@ -2573,7 +2366,7 @@ fn spawn_live_stream(
                             let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
                             listen_along.handle_disconnect_or_logout().await;
                             player_hub.set_session(None).await;
-                            close_open_sessions(&db_path, &mut active_plays).await;
+                            close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
                             if let Some(obs) = own_observer.take() {
                                 obs.shutdown().await;
                             }
@@ -2595,8 +2388,8 @@ fn spawn_live_stream(
                             let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
                             listen_along.handle_disconnect_or_logout().await;
                             player_hub.set_session(None).await;
-                            close_open_sessions(&db_path, &mut active_plays).await;
-                            active_plays.clear();
+                            close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
+                            play_tracker.clear();
                             if let Some(obs) = own_observer.take() {
                                 obs.shutdown().await;
                             }
@@ -2627,7 +2420,7 @@ fn spawn_live_stream(
                             own_session.as_ref(),
                             &mut own_name_cache,
                             account_uri.as_deref(),
-                            &active_plays,
+                            &play_tracker,
                             &db_path,
                         )
                         .await
@@ -2640,7 +2433,7 @@ fn spawn_live_stream(
                                 log_activities_with_state(
                                     &db_path,
                                     vec![own_activity],
-                                    &mut active_plays,
+                                    &mut play_tracker,
                                     now_ms,
                                     grace_ms,
                                     false,
@@ -2709,7 +2502,7 @@ fn spawn_live_stream(
                                     own_session.as_ref(),
                                     &mut own_name_cache,
                                     account_uri.as_deref(),
-                                    &active_plays,
+                                    &play_tracker,
                                     &db_path,
                                 )
                                 .await
@@ -2730,7 +2523,7 @@ fn spawn_live_stream(
                                     log_activities_with_state(
                                         &db_path,
                                         friends,
-                                        &mut active_plays,
+                                        &mut play_tracker,
                                         now_ms,
                                         grace_ms,
                                         true,
@@ -2821,7 +2614,7 @@ fn spawn_live_stream(
                                     log_activities_with_state(
                                         &db_path,
                                         vec![activity],
-                                        &mut active_plays,
+                                        &mut play_tracker,
                                         now_ms,
                                         grace_ms,
                                         false,
@@ -2861,8 +2654,8 @@ fn spawn_live_stream(
                                     .await;
                                     listen_along.handle_disconnect_or_logout().await;
                                     player_hub.set_session(None).await;
-                                    close_open_sessions(&db_path, &mut active_plays).await;
-                                    active_plays.clear();
+                                    close_open_sessions(&db_path, &mut play_tracker, grace_ms).await;
+                                    play_tracker.clear();
                                     if let Some(obs) = own_observer.take() {
                                         obs.shutdown().await;
                                     }

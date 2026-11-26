@@ -382,9 +382,13 @@ fn idle_from_prev(
     user_uri: &str,
     user_name: &str,
     user_image_url: Option<&str>,
+    now_ms: i64,
 ) -> Option<FriendActivity> {
     prev.map(|p| {
         let mut cloned = p.clone();
+        if cloned.playing {
+            cloned.timestamp = now_ms;
+        }
         cloned.playing = false;
         cloned.user = FriendUser {
             uri: user_uri.to_string(),
@@ -404,10 +408,10 @@ pub(crate) fn cluster_to_activity(
     now_ms: i64,
 ) -> Option<FriendActivity> {
     let Some(player_state) = cluster.player_state.as_ref() else {
-        return idle_from_prev(prev, user_uri, user_name, user_image_url);
+        return idle_from_prev(prev, user_uri, user_name, user_image_url, now_ms);
     };
     let Some(track) = player_state.track.as_ref() else {
-        return idle_from_prev(prev, user_uri, user_name, user_image_url);
+        return idle_from_prev(prev, user_uri, user_name, user_image_url, now_ms);
     };
 
     let track_uri = track.uri.trim();
@@ -415,7 +419,7 @@ pub(crate) fn cluster_to_activity(
         || track_uri.starts_with("spotify:ad:")
         || track_uri.starts_with("spotify:delimiter")
     {
-        return idle_from_prev(prev, user_uri, user_name, user_image_url);
+        return idle_from_prev(prev, user_uri, user_name, user_image_url, now_ms);
     }
 
     let playing = player_state.is_playing && !player_state.is_paused;
@@ -602,20 +606,58 @@ pub(crate) fn cluster_to_activity(
         None
     };
 
+    let pos_ms = player_state.position_as_of_timestamp.max(0);
     let estimated_start = if player_state.timestamp > 0 {
-        let pos = player_state.position_as_of_timestamp.max(0);
-        player_state.timestamp.saturating_sub(pos)
+        player_state.timestamp.saturating_sub(pos_ms)
     } else if let Some(started) = cluster.started_playing_at_timestamp.filter(|&ts| ts > 0) {
         started as i64
     } else {
         now_ms
     };
 
-    let timestamp = if let Some(prev_act) = prev
+    let event_time_ms = if player_state.timestamp > 0 {
+        player_state.timestamp
+    } else {
+        now_ms
+    };
+
+    let timestamp = if !playing {
+        // When paused/stopped, report the pause/event time (matching Spotify's friend feed
+        // semantics) so PlayTracker records real listened_ms instead of 0:00. Keep the
+        // existing pause timestamp across subsequent idle updates on the same track.
+        if let Some(prev_act) = prev
+            && !prev_act.playing
+            && prev_act.track.uri == track_uri
+        {
+            prev_act.timestamp
+        } else {
+            event_time_ms
+        }
+    } else if let Some(prev_act) = prev
         && prev_act.track.uri == track_uri
-        && (estimated_start - prev_act.timestamp).abs() <= TIMESTAMP_STABILIZE_WINDOW_MS
     {
-        prev_act.timestamp
+        if prev_act.playing {
+            // While continuously playing the same track, only emit a new timestamp on a
+            // genuine restart/loop near the beginning of the track — not on jitter or
+            // mid-track seeks.
+            let is_near_start = pos_ms < 15_000;
+            let replay_min_elapsed = duration_ms
+                .filter(|&d| d > 0)
+                .map(|d| (d / 2).max(TIMESTAMP_STABILIZE_WINDOW_MS))
+                .unwrap_or(TIMESTAMP_STABILIZE_WINDOW_MS);
+            if is_near_start && (estimated_start - prev_act.timestamp) >= replay_min_elapsed {
+                estimated_start
+            } else if (estimated_start - prev_act.timestamp).abs() <= TIMESTAMP_STABILIZE_WINDOW_MS {
+                prev_act.timestamp
+            } else {
+                // Mid-track seek on the same play: keep anchored to original start time.
+                prev_act.timestamp
+            }
+        } else {
+            // Resuming from pause on the same track: use `estimated_start` (so UI progress
+            // stays accurate; PlayTracker merges same-track resumes cleanly).
+            estimated_start
+        }
     } else {
         estimated_start
     };
@@ -910,7 +952,7 @@ mod tests {
         .unwrap();
         assert_eq!(second.timestamp, first.timestamp);
 
-        // Replay of the same track 250s later => outside ±20s window, gets new timestamp
+        // Replay of the same track 250s later near the start => gets new timestamp
         let replay = cluster_to_activity(
             &sample_cluster(
                 "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
@@ -928,5 +970,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(replay.timestamp, 1_700_000_250_000);
+    }
+
+    #[test]
+    fn cluster_to_activity_reports_pause_event_time_and_stabilizes_seeks() {
+        let playing = cluster_to_activity(
+            &sample_cluster(
+                "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
+                true,
+                false,
+                1_700_000_010_000,
+                10_000,
+                "",
+            ),
+            "spotify:user:roma",
+            "Roma",
+            None,
+            None,
+            1_700_000_010_000,
+        )
+        .unwrap();
+        assert_eq!(playing.timestamp, 1_700_000_000_000);
+
+        // Seeking forward by 90s on the same track must keep anchored to original start time.
+        let sought = cluster_to_activity(
+            &sample_cluster(
+                "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
+                true,
+                false,
+                1_700_000_020_000,
+                110_000,
+                "",
+            ),
+            "spotify:user:roma",
+            "Roma",
+            None,
+            Some(&playing),
+            1_700_000_020_000,
+        )
+        .unwrap();
+        assert_eq!(sought.timestamp, playing.timestamp);
+
+        // Pausing at +60s reports the pause event timestamp (not track start), so elapsed > 0.
+        let paused = cluster_to_activity(
+            &sample_cluster(
+                "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
+                true,
+                true,
+                1_700_000_060_000,
+                150_000,
+                "",
+            ),
+            "spotify:user:roma",
+            "Roma",
+            None,
+            Some(&sought),
+            1_700_000_060_000,
+        )
+        .unwrap();
+        assert!(!paused.playing);
+        assert_eq!(paused.timestamp, 1_700_000_060_000);
+
+        // Subsequent idle update keeps the original pause timestamp.
+        let still_paused = cluster_to_activity(
+            &sample_cluster(
+                "spotify:track:1eyzqe2QqGZUmfcPZtrIyt",
+                true,
+                true,
+                1_700_000_120_000,
+                150_000,
+                "",
+            ),
+            "spotify:user:roma",
+            "Roma",
+            None,
+            Some(&paused),
+            1_700_000_120_000,
+        )
+        .unwrap();
+        assert_eq!(still_paused.timestamp, paused.timestamp);
     }
 }
