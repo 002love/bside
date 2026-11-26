@@ -102,6 +102,10 @@ export function AccountBadge({
   }, [loggingOut]);
 
   const closePopover = useCallback(() => setOpen(false), []);
+  const livePalette = useCoverAccent(
+    liveItem?.cover_url,
+    liveItem?.track_uri || liveItem?.track_name,
+  );
 
   if (!profile || signedOut) {
     return (
@@ -134,7 +138,6 @@ export function AccountBadge({
 
   const displayName = profile.display_name || profile.username;
   const isListening = Boolean(liveItem?.playing);
-  const livePalette = useCoverAccent(liveItem?.cover_url, liveItem?.track_uri || liveItem?.track_name);
   const profileUrl = `https://open.spotify.com/user/${encodeURIComponent(profile.username)}`;
 
   return (
