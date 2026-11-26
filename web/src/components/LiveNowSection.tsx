@@ -231,15 +231,36 @@ function CompactLiveTrack({
 
   return (
     <StaggerItem index={index}>
-      <div className="group flex items-center gap-3 rounded-[8px] px-2.5 py-2 transition-colors duration-150 hover:bg-white/[0.055]">
+      <div className="group relative flex items-center gap-3.5 overflow-hidden rounded-[10px] bg-white/[0.025] p-2.5 ring-1 ring-inset ring-white/[0.06] transition-colors duration-150 hover:bg-white/[0.055] hover:ring-white/[0.11]">
+        {/* Crisp 56x56 album art as the clear visual anchor */}
         <CoverArt
           src={friend.cover_url}
           alt={friend.track_name}
-          size="sm"
+          size="md"
+          className="h-14 w-14 shrink-0 rounded-[7px] shadow-[0_6px_18px_rgba(0,0,0,0.45)]"
           hoverZoom
         />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
+
+        <div className="flex min-w-0 flex-1 flex-col justify-between self-stretch py-0.5">
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <a
+                href={friend.spotify_url}
+                target="_blank"
+                rel="noreferrer"
+                className="block min-w-0 truncate text-[13.5px] font-semibold leading-tight text-white transition-colors hover:underline"
+              >
+                {friend.track_name}
+              </a>
+              <PixelEq active color={palette.accent} className="h-2.5 shrink-0" />
+            </div>
+
+            <div className="mt-0.5 truncate text-[12px] leading-snug text-[var(--ink-secondary)]">
+              {friend.all_artists}
+            </div>
+          </div>
+
+          <div className="mt-1.5 flex items-center justify-between gap-2">
             <button
               type="button"
               onClick={() => onFilterByUser?.(friend.user_uri)}
@@ -250,43 +271,30 @@ function CompactLiveTrack({
                 name={friend.user_name}
                 imageUrl={avatarUrl}
                 size="xs"
-                isLive
-                isSelf={friend.is_self}
-                ringColor={palette.accent}
+                isLive={false}
+                className="h-4 w-4 opacity-90"
               />
-              <span className="truncate text-[11.5px] font-medium text-[var(--ink-secondary)] transition-colors hover:text-white">
+              <span className="truncate text-[11px] font-medium text-[var(--ink-muted)] transition-colors hover:text-white">
                 {friend.user_name}
                 {friend.is_self ? ' · You' : ''}
               </span>
             </button>
-            <PixelEq active color={palette.accent} className="shrink-0" />
           </div>
-
-          <a
-            href={friend.spotify_url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-0.5 block truncate text-[13px] font-medium text-white transition-colors hover:underline"
-          >
-            {friend.track_name}
-          </a>
-          <div className="truncate text-[11.5px] text-[var(--ink-muted)]">
-            {friend.all_artists}
-          </div>
-
-          {hasDuration && (
-            <div className="mt-2 h-[2px] w-full overflow-hidden rounded-full bg-white/[0.08]">
-              <div
-                className="h-full rounded-full transition-[width] duration-1000 ease-linear"
-                style={{
-                  width: `${pct}%`,
-                  backgroundColor: palette.accent,
-                  boxShadow: `0 0 12px ${palette.soft}`,
-                }}
-              />
-            </div>
-          )}
         </div>
+
+        {/* Flush bottom hairline progress bar tinted with the track's cover accent */}
+        {hasDuration && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-white/[0.06]">
+            <div
+              className="h-full transition-[width] duration-1000 ease-linear"
+              style={{
+                width: `${pct}%`,
+                backgroundColor: palette.accent,
+                boxShadow: `0 0 10px ${palette.soft}`,
+              }}
+            />
+          </div>
+        )}
       </div>
     </StaggerItem>
   );
@@ -662,12 +670,17 @@ export function LiveNowSection({
     }
   };
 
-  // COMPACT MODE (embedded full-width cardless band inside Overview)
+  // COMPACT MODE (embedded full-width band inside Overview)
   if (mode === 'compact') {
     return (
-      <section className={cn('w-full border-b border-white/[0.07]', collapsed ? 'pb-3' : 'pb-6')}>
+      <section
+        className={cn(
+          'w-full px-6 lg:px-8',
+          collapsed ? 'pb-4' : 'pb-6',
+        )}
+      >
         {/* Compact Header */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5">
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
             <PixelEq
               active={spinningFriends.length > 0}
@@ -782,7 +795,7 @@ export function LiveNowSection({
                 )}
 
                 {spinningFriends.length > 0 && (
-                  <div className="-mx-2.5 grid grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                     {spinningFriends.map((friend, idx) => (
                       <CompactLiveTrack
                         key={friend.user_uri}
