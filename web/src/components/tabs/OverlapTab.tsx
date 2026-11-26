@@ -62,7 +62,7 @@ function ListenerAvatarStack({
                 type="button"
                 onClick={() => onFilterByUser?.(uri)}
                 title={`Filter by ${name}`}
-                className="tactile-press relative rounded-full ring-2 ring-[var(--bg-surface)] transition-transform hover:z-10 hover:scale-110 cursor-pointer"
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform hover:z-10 hover:scale-110 cursor-pointer"
               >
                 <UserAvatar name={name} imageUrl={imageUrl} size="sm" />
               </button>
@@ -73,7 +73,7 @@ function ListenerAvatarStack({
             <span
               key={name}
               title={name}
-              className="relative rounded-full ring-2 ring-[var(--bg-surface)]"
+              className="relative rounded-full ring-2 ring-[#09090b]"
             >
               <UserAvatar name={name} imageUrl={imageUrl} size="sm" />
             </span>
@@ -89,7 +89,7 @@ function ListenerAvatarStack({
   );
 }
 
-function PairCard({
+function PairRow({
   pair,
   avatarMap,
   onFilterByUser,
@@ -115,10 +115,8 @@ function PairCard({
     <StaggerItem index={index}>
       <div
         className={cn(
-          'rounded-[12px] border border-[var(--border-subtle)] p-4 transition-colors',
-          muted
-            ? 'bg-[var(--bg-inset)]/50 opacity-70'
-            : 'bg-[var(--bg-surface)] hover:border-[var(--border-strong)]',
+          'border-b border-white/[0.07] py-4 transition-colors',
+          muted ? 'opacity-65' : 'hover:bg-white/[0.03] -mx-3 px-3 rounded-[8px]',
         )}
       >
         <div className="flex items-start justify-between gap-3">
@@ -130,7 +128,7 @@ function PairCard({
                 disabled={!uriA || !onFilterByUser}
                 onClick={() => uriA && onFilterByUser?.(uriA)}
                 title={uriA ? `Filter by ${pair.friend_a}` : pair.friend_a}
-                className="tactile-press relative rounded-full ring-2 ring-[var(--bg-surface)] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
               >
                 <UserAvatar name={pair.friend_a} imageUrl={avatarA} size="md" />
               </button>
@@ -139,14 +137,14 @@ function PairCard({
                 disabled={!uriB || !onFilterByUser}
                 onClick={() => uriB && onFilterByUser?.(uriB)}
                 title={uriB ? `Filter by ${pair.friend_b}` : pair.friend_b}
-                className="tactile-press relative rounded-full ring-2 ring-[var(--bg-surface)] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
               >
                 <UserAvatar name={pair.friend_b} imageUrl={avatarB} size="md" />
               </button>
             </div>
 
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px] font-medium text-[var(--ink-primary)]">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[14px] font-medium text-white">
                 <button
                   type="button"
                   disabled={!uriA || !onFilterByUser}
@@ -165,7 +163,7 @@ function PairCard({
                   {pair.friend_b}
                 </button>
               </div>
-              <div className="mt-0.5 text-xs text-[var(--ink-muted)] tabular-nums">
+              <div className="mt-0.5 text-xs text-[var(--ink-secondary)] tabular-nums">
                 {pair.shared_artists} shared {pair.shared_artists === 1 ? 'artist' : 'artists'} ·{' '}
                 {pair.shared_tracks} shared {pair.shared_tracks === 1 ? 'track' : 'tracks'}
               </div>
@@ -175,8 +173,8 @@ function PairCard({
           <div className="shrink-0 text-right">
             <div
               className={cn(
-                'text-2xl font-semibold leading-none tracking-[-0.02em] tabular-nums',
-                muted ? 'text-[var(--ink-muted)]' : 'text-[var(--ink-primary)]',
+                'text-2xl font-semibold leading-none tracking-[-0.025em] tabular-nums',
+                muted ? 'text-[var(--ink-muted)]' : 'text-white',
               )}
             >
               {scorePct}%
@@ -191,7 +189,7 @@ function PairCard({
           </div>
         </div>
 
-        <div className="mt-3.5 h-[5px] w-full overflow-hidden rounded-full bg-white/[0.06]">
+        <div className="mt-3.5 h-[4px] w-full overflow-hidden rounded-full bg-white/[0.06]">
           <motion.div
             initial={{ width: 0 }}
             animate={{ width: `${muted ? 0 : Math.max(3, scorePct)}%` }}
@@ -207,26 +205,28 @@ function PairCard({
           />
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-secondary)] tabular-nums">
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-secondary)] tabular-nums">
           <span className="inline-flex items-center gap-1">
             <span>Artists</span>
             <InfoTooltip
               iconOnly
               content="Number of unique artists listened to by both people in the selected timeframe."
             />
-            <span className="font-medium text-[var(--ink-primary)]">{artistPct}%</span>
+            <span className="font-medium text-white">{artistPct}%</span>
             <span className="text-[var(--ink-muted)]">
               ({pair.shared_artists}/{pair.total_union_artists})
             </span>
           </span>
-          <span className="text-[var(--ink-muted)]">·</span>
+          <span className="text-white/20" aria-hidden="true">
+            ·
+          </span>
           <span className="inline-flex items-center gap-1">
             <span>Tracks</span>
             <InfoTooltip
               iconOnly
               content="Number of unique tracks listened to by both people in the selected timeframe."
             />
-            <span className="font-medium text-[var(--ink-primary)]">{trackPct}%</span>
+            <span className="font-medium text-white">{trackPct}%</span>
             <span className="text-[var(--ink-muted)]">
               ({pair.shared_tracks}/{pair.total_union_tracks})
             </span>
@@ -294,12 +294,20 @@ export function OverlapTab({
 
   if (loading && !report) {
     return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="bside-card h-56 bg-[var(--bg-surface)]/70 lg:col-span-2" />
-          <div className="bside-card h-56 bg-[var(--bg-surface)]/70" />
+      <div className="w-full space-y-10 px-6 py-6 lg:px-8">
+        <div>
+          <div className="h-7 w-40 rounded bg-white/[0.07]" />
+          <div className="mt-2 h-3.5 w-60 rounded bg-white/[0.04]" />
         </div>
-        <div className="bside-card h-64 bg-[var(--bg-surface)]/60" />
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 border-t border-white/[0.07] pt-4 md:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="border-b border-white/[0.07] py-4 space-y-3">
+              <div className="h-5 w-44 rounded bg-white/[0.06]" />
+              <div className="h-1.5 w-full rounded bg-white/[0.05]" />
+              <div className="h-3 w-36 rounded bg-white/[0.04]" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -311,27 +319,52 @@ export function OverlapTab({
       report.shared_artists.length === 0)
   ) {
     return (
-      <EmptyState
-        title="Not enough friend overlap data yet"
-        description="Taste compatibility and trendsetter leaderboards appear once listens from at least two friends have been logged."
-        command="bside watch"
-      />
+      <div className="w-full space-y-6 px-6 py-6 lg:px-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Taste overlap</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            Shared artists, shared tracks, and trendsetter leaderboards
+          </p>
+        </div>
+        <EmptyState
+          title="Not enough friend overlap data yet"
+          description="Taste compatibility and trendsetter leaderboards appear once listens from at least two friends have been logged."
+          command="bside watch"
+        />
+      </div>
     );
   }
 
   const maxTrendsetter = report.trendsetter_leaderboard[0]?.[1] ?? 1;
 
   return (
-    <div className="space-y-7">
+    <div className="w-full space-y-10 px-6 py-6 lg:px-8">
+      {/* Top Heading + Quiet Summary */}
+      <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-white/[0.07] pb-5">
+        <div>
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Taste overlap</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            Ranked listener compatibility, shared tracks, and who discovered them first
+          </p>
+        </div>
+        <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+          {activePairs.length} {activePairs.length === 1 ? 'match' : 'matches'} ·{' '}
+          {report.shared_tracks.length} shared{' '}
+          {report.shared_tracks.length === 1 ? 'track' : 'tracks'} ·{' '}
+          {report.shared_artists.length} shared{' '}
+          {report.shared_artists.length === 1 ? 'artist' : 'artists'}
+        </span>
+      </header>
+
       {/* Pair Compatibility & Trendsetter Leaderboard */}
-      <section className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-        {/* Pair Compatibility */}
+      <section className="grid grid-cols-1 gap-10 border-b border-white/[0.07] pb-10 lg:grid-cols-3">
+        {/* Friend Compatibility */}
         <div className="space-y-4 lg:col-span-2">
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2">
                 <GitCompare className="h-4 w-4 text-[var(--accent-ember)]" />
-                <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+                <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                   Friend compatibility
                 </h2>
                 <InfoTooltip
@@ -356,9 +389,9 @@ export function OverlapTab({
               description="Try widening the timeframe or selecting more friends to discover shared music."
             />
           ) : (
-            <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-x-10 border-t border-white/[0.07] md:grid-cols-2">
               {activePairs.map((pair, idx) => (
-                <PairCard
+                <PairRow
                   key={`${pair.friend_a}-${pair.friend_b}`}
                   pair={pair}
                   avatarMap={avatarMap}
@@ -370,11 +403,11 @@ export function OverlapTab({
           )}
 
           {zeroPairs.length > 0 && (
-            <div>
+            <div className="pt-2">
               <button
                 type="button"
                 onClick={() => setShowZeroPairs((v) => !v)}
-                className="tactile-press inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] cursor-pointer"
+                className="tactile-press inline-flex items-center gap-1.5 rounded-full border border-white/[0.1] bg-white/[0.03] px-3.5 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:border-white/[0.18] hover:text-white cursor-pointer"
               >
                 {showZeroPairs ? (
                   <>
@@ -400,9 +433,9 @@ export function OverlapTab({
                     transition={SPRING_SMOOTH}
                     className="overflow-hidden"
                   >
-                    <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div className="mt-4 grid grid-cols-1 gap-x-10 border-t border-white/[0.07] md:grid-cols-2">
                       {zeroPairs.map((pair, idx) => (
-                        <PairCard
+                        <PairRow
                           key={`${pair.friend_a}-${pair.friend_b}`}
                           pair={pair}
                           avatarMap={avatarMap}
@@ -420,11 +453,11 @@ export function OverlapTab({
         </div>
 
         {/* Trendsetter Leaderboard */}
-        <div className="bside-card flex flex-col self-start">
-          <div className="border-b border-[var(--border-subtle)] px-5 py-4">
+        <div className="flex flex-col lg:border-l lg:border-white/[0.07] lg:pl-8">
+          <div className="pb-4">
             <div className="flex items-center gap-2">
               <Award className="h-4 w-4 text-[var(--accent-ember)]" />
-              <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+              <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                 Trendsetters
               </h2>
               <InfoTooltip
@@ -437,9 +470,9 @@ export function OverlapTab({
             </p>
           </div>
 
-          <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {report.trendsetter_leaderboard.length === 0 ? (
-              <p className="px-3 py-8 text-center text-xs text-[var(--ink-muted)]">
+              <p className="py-8 text-xs text-[var(--ink-muted)]">
                 No shared tracks detected yet.
               </p>
             ) : (
@@ -450,7 +483,7 @@ export function OverlapTab({
 
                 return (
                   <StaggerItem key={name} index={idx}>
-                    <div className="rounded-[8px] px-3 py-2.5 transition-colors hover:bg-[var(--bg-hover)]">
+                    <div className="-mx-2.5 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-2.5">
                           <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
@@ -460,7 +493,7 @@ export function OverlapTab({
                             type="button"
                             disabled={!uri || !onFilterByUser}
                             onClick={() => uri && onFilterByUser?.(uri)}
-                            className="tactile-press inline-flex min-w-0 items-center gap-2 text-[13px] font-medium text-[var(--ink-primary)] transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-ember)]"
+                            className="tactile-press inline-flex min-w-0 items-center gap-2 text-[13px] font-medium text-white transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-ember)]"
                           >
                             <UserAvatar name={name} imageUrl={img} size="sm" />
                             <span className="truncate">{name}</span>
@@ -480,7 +513,7 @@ export function OverlapTab({
                             delay: Math.min(idx * 0.035, 0.2),
                             ease: EASE_OUT_EXPO,
                           }}
-                          className="h-full rounded-full bg-[var(--accent-ember)]/80"
+                          className="h-full rounded-full bg-[var(--accent-ember)]/85"
                         />
                       </div>
                     </div>
@@ -493,10 +526,10 @@ export function OverlapTab({
       </section>
 
       {/* Shared Tracks */}
-      <section className="bside-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-5 py-4">
+      <section className="space-y-4 border-b border-white/[0.07] pb-10">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
               Shared tracks
             </h2>
             <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -505,17 +538,18 @@ export function OverlapTab({
           </div>
           {report.shared_tracks.length > 0 && (
             <span className="text-xs text-[var(--ink-muted)] tabular-nums">
-              {report.shared_tracks.length} tracks
+              {report.shared_tracks.length}{' '}
+              {report.shared_tracks.length === 1 ? 'track' : 'tracks'}
             </span>
           )}
         </div>
 
         {report.shared_tracks.length === 0 ? (
-          <p className="py-10 text-center text-xs text-[var(--ink-muted)]">
+          <p className="border-t border-white/[0.07] py-8 text-xs text-[var(--ink-muted)]">
             No shared tracks yet.
           </p>
         ) : (
-          <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {report.shared_tracks.slice(0, 50).map((t, idx) => {
               const url = spotifyUriToUrl(t.track_uri);
               const firstUri = findUserUri(avatarMap, t.first_player_name);
@@ -523,7 +557,7 @@ export function OverlapTab({
 
               return (
                 <StaggerItem key={t.track_uri} index={idx}>
-                  <div className="group flex flex-col gap-2.5 rounded-[8px] px-3 py-3 transition-colors hover:bg-[var(--bg-hover)] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                  <div className="group -mx-2.5 flex flex-col gap-2.5 rounded-[8px] px-2.5 py-3 transition-colors hover:bg-white/[0.055] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     {/* Track & artist */}
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
@@ -532,19 +566,21 @@ export function OverlapTab({
                             href={url}
                             target="_blank"
                             rel="noreferrer"
-                            className="truncate text-[13px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
+                            className="truncate text-[13px] font-medium text-white transition-colors hover:text-[var(--accent-ember)]"
                           >
                             {t.track_name}
                           </a>
                         ) : (
-                          <span className="truncate text-[13px] font-medium text-[var(--ink-primary)]">
+                          <span className="truncate text-[13px] font-medium text-white">
                             {t.track_name}
                           </span>
                         )}
                       </div>
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--ink-secondary)]">
                         <span className="truncate">{t.artist_name}</span>
-                        <span className="text-[var(--ink-muted)]">·</span>
+                        <span className="text-white/20" aria-hidden="true">
+                          ·
+                        </span>
                         <span className="inline-flex items-center gap-1.5 text-[var(--ink-muted)]">
                           <span>First by</span>
                           <button
@@ -576,7 +612,7 @@ export function OverlapTab({
                       />
 
                       <div className="flex items-center gap-2">
-                        <span className="min-w-[54px] text-right text-xs font-medium text-[var(--ink-primary)] tabular-nums">
+                        <span className="min-w-[54px] text-right text-xs font-medium text-white tabular-nums">
                           {t.total_plays.toLocaleString()}{' '}
                           <span className="font-normal text-[var(--ink-muted)]">
                             {t.total_plays === 1 ? 'play' : 'plays'}
@@ -590,7 +626,7 @@ export function OverlapTab({
                             rel="noreferrer"
                             title="Open in Spotify"
                             aria-label={`Open ${t.track_name} in Spotify`}
-                            className="tactile-press inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[var(--ink-muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--ink-primary)]"
+                            className="tactile-press inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[var(--ink-muted)] transition-colors hover:bg-white/[0.08] hover:text-white"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </a>
@@ -606,12 +642,12 @@ export function OverlapTab({
       </section>
 
       {/* Shared Artists */}
-      <section className="bside-card">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-5 py-4">
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="flex items-center gap-2">
               <Users className="h-4 w-4 text-[var(--ink-muted)]" />
-              <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+              <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                 Shared artists
               </h2>
             </div>
@@ -621,26 +657,27 @@ export function OverlapTab({
           </div>
           {report.shared_artists.length > 0 && (
             <span className="text-xs text-[var(--ink-muted)] tabular-nums">
-              {report.shared_artists.length} artists
+              {report.shared_artists.length}{' '}
+              {report.shared_artists.length === 1 ? 'artist' : 'artists'}
             </span>
           )}
         </div>
 
         {report.shared_artists.length === 0 ? (
-          <p className="py-10 text-center text-xs text-[var(--ink-muted)]">
+          <p className="border-t border-white/[0.07] py-8 text-xs text-[var(--ink-muted)]">
             No shared artists yet.
           </p>
         ) : (
-          <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {report.shared_artists.slice(0, 30).map(([artist, friends, plays], idx) => (
               <StaggerItem key={artist} index={idx}>
-                <div className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] px-3 py-2.5 transition-colors hover:bg-[var(--bg-hover)]">
+                <div className="-mx-2.5 flex flex-wrap items-center justify-between gap-3 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
                   <div className="flex min-w-0 items-center gap-3">
                     <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
                       {String(idx + 1).padStart(2, '0')}
                     </span>
                     <div className="min-w-0">
-                      <div className="truncate text-[13px] font-medium text-[var(--ink-primary)]">
+                      <div className="truncate text-[13px] font-medium text-white">
                         {artist}
                       </div>
                       <div className="truncate text-xs text-[var(--ink-muted)]">

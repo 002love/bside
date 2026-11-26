@@ -74,7 +74,7 @@ function ChartTooltip({
   return (
     <div className="bside-popover px-3 py-2 text-xs">
       <div className="text-[11px] font-medium text-[var(--ink-secondary)]">{label}</div>
-      <div className="mt-0.5 text-xs font-semibold text-[var(--ink-primary)] tabular-nums">
+      <div className="mt-0.5 text-xs font-semibold text-white tabular-nums">
         {val.toLocaleString()} {val === 1 ? 'play' : 'plays'}
       </div>
     </div>
@@ -168,36 +168,57 @@ export function OverviewTab({
     [selectedUsers],
   );
 
+  const timeframeLabel = days != null ? `Last ${days} days` : 'All recorded time';
+  const scopeLabel =
+    selectedUsers.length === 0
+      ? 'Everyone in your circle'
+      : selectedUsers.length === 1
+        ? '1 listener selected'
+        : `${selectedUsers.length} listeners selected`;
+
   if (loading && !stats) {
     return (
-      <div className="space-y-6">
-        {liveStrip}
-        <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div
-              key={i}
-              className="bside-card h-[116px] bg-[var(--bg-surface)]/70 p-5"
-            >
-              <div className="h-3 w-20 rounded bg-white/[0.05]" />
-              <div className="mt-4 h-7 w-24 rounded bg-white/[0.06]" />
-              <div className="mt-3 h-2.5 w-32 rounded bg-white/[0.04]" />
-            </div>
-          ))}
+      <div className="w-full">
+        <div className="px-6 pt-6 pb-5 lg:px-8">
+          <div className="h-7 w-32 rounded bg-white/[0.07]" />
+          <div className="mt-2 h-3.5 w-48 rounded bg-white/[0.04]" />
         </div>
-        <div className="bside-card h-[290px] bg-[var(--bg-surface)]/60" />
+        {liveStrip}
+        <div className="px-6 lg:px-8">
+          <div className="grid grid-cols-2 border-y border-white/[0.08] divide-y divide-white/[0.07] lg:grid-cols-4 lg:divide-y-0 lg:divide-x">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="px-5 py-6 first:pl-0">
+                <div className="h-3 w-20 rounded bg-white/[0.05]" />
+                <div className="mt-4 h-8 w-24 rounded bg-white/[0.07]" />
+                <div className="mt-3 h-2.5 w-32 rounded bg-white/[0.04]" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="px-6 py-8 lg:px-8">
+          <div className="h-[240px] w-full rounded bg-white/[0.03]" />
+        </div>
       </div>
     );
   }
 
   if (!stats || stats.total_plays === 0) {
     return (
-      <div className="space-y-6">
+      <div className="w-full">
+        <div className="px-6 pt-6 pb-5 lg:px-8">
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Overview</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            {timeframeLabel} · {scopeLabel}
+          </p>
+        </div>
         {liveStrip}
-        <EmptyState
-          title="No listening activity recorded yet"
-          description="Start polling Spotify Friend Activity to populate your local SQLite database with plays, skips, repeats, and listening sessions."
-          command="bside watch"
-        />
+        <div className="px-6 py-8 lg:px-8">
+          <EmptyState
+            title="No listening activity recorded yet"
+            description="Start polling Spotify Friend Activity to populate your local SQLite database with plays, skips, repeats, and listening sessions."
+            command="bside watch"
+          />
+        </div>
       </div>
     );
   }
@@ -263,16 +284,40 @@ export function OverviewTab({
   ];
 
   return (
-    <div className="space-y-7">
+    <div className="w-full">
+      {/* Subtle Top Header Band */}
+      <header className="flex flex-wrap items-baseline justify-between gap-2 px-6 pt-6 pb-5 lg:px-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Overview</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            {timeframeLabel} · {scopeLabel}
+          </p>
+        </div>
+        {stats.last_played_ms != null && (
+          <span className="font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
+            Last play {formatRelativeTime(stats.last_played_ms)}
+          </span>
+        )}
+      </header>
+
+      {/* Live Strip (when present) */}
       {liveStrip}
 
-      {/* Editorial KPI Row */}
-      <section className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
-        {kpiItems.map((item, index) => {
-          const Icon = item.icon;
-          return (
-            <StaggerItem key={item.label} index={index}>
-              <div className="bside-card flex h-full flex-col justify-between p-5">
+      {/* Hairline KPI Strip — Zero Card Boxes */}
+      <section className="px-6 lg:px-8">
+        <div className="grid grid-cols-2 border-y border-white/[0.08] divide-y divide-white/[0.07] lg:grid-cols-4 lg:divide-y-0 lg:divide-x">
+          {kpiItems.map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <StaggerItem
+                key={item.label}
+                index={index}
+                className={cn(
+                  'flex flex-col justify-between py-6',
+                  index % 2 === 0 ? 'pr-5' : 'pl-5',
+                  'lg:px-6 lg:first:pl-0 lg:last:pr-0',
+                )}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[13px] font-medium text-[var(--ink-secondary)]">
@@ -283,24 +328,24 @@ export function OverviewTab({
                   <Icon className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
                 </div>
 
-                <div className="mt-3.5 text-[28px] font-semibold leading-none tracking-[-0.025em] text-[var(--ink-primary)] tabular-nums">
+                <div className="mt-3.5 text-[32px] font-semibold leading-none tracking-[-0.03em] text-white tabular-nums">
                   {item.value}
                 </div>
 
                 <p className="mt-2.5 truncate text-xs text-[var(--ink-muted)] tabular-nums">
                   {item.subtext}
                 </p>
-              </div>
-            </StaggerItem>
-          );
-        })}
+              </StaggerItem>
+            );
+          })}
+        </div>
       </section>
 
-      {/* Listening Rhythm & Heatmap */}
-      <section className="bside-card p-5 sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)] pb-4">
+      {/* Listening Rhythm & Heatmap — Painted directly on #09090b */}
+      <section className="border-b border-white/[0.07] px-6 py-8 lg:px-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-6">
           <div>
-            <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
               Listening rhythm
             </h2>
             <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -313,12 +358,12 @@ export function OverviewTab({
           <div
             role="tablist"
             aria-label="Listening rhythm view"
-            className="inline-flex items-center rounded-[10px] border border-[var(--border-subtle)] bg-[var(--bg-inset)] p-1"
+            className="inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] p-1"
           >
             {(
               [
-                { id: 'charts', label: 'Hourly & weekday' },
-                { id: 'heatmap', label: '7×24 heatmap' },
+                { id: 'charts', label: 'Activity' },
+                { id: 'heatmap', label: '7×24 Heatmap' },
               ] as const
             ).map((tab) => {
               const active = rhythmMode === tab.id;
@@ -330,9 +375,9 @@ export function OverviewTab({
                   aria-selected={active}
                   onClick={() => setRhythmMode(tab.id)}
                   className={cn(
-                    'tactile-press relative rounded-[7px] px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer',
+                    'tactile-press relative rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer',
                     active
-                      ? 'text-[var(--ink-primary)]'
+                      ? 'text-white'
                       : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]',
                   )}
                 >
@@ -340,7 +385,7 @@ export function OverviewTab({
                     <motion.span
                       layoutId="overview-chart-tab"
                       transition={SPRING_SNAPPY}
-                      className="absolute inset-0 rounded-[7px] bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/[0.08]"
+                      className="absolute inset-0 rounded-full bg-white/[0.11] ring-1 ring-inset ring-white/[0.1]"
                     />
                   )}
                   <span className="relative z-10">{tab.label}</span>
@@ -350,220 +395,218 @@ export function OverviewTab({
           </div>
         </div>
 
-        <div className="pt-5">
-          <AnimatePresence mode="wait" initial={false}>
-            {rhythmMode === 'charts' ? (
-              <motion.div
-                key="charts"
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.18, ease: EASE_OUT_EXPO }}
-                className="grid grid-cols-1 gap-6 lg:grid-cols-2"
-              >
-                {/* Hourly Area Chart */}
-                <div>
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-[13px] font-medium text-[var(--ink-primary)]">
-                      Plays by hour
-                    </span>
-                    <span className="flex items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
-                      <span className="h-2 w-2 rounded-full bg-[var(--chart-1)]" />
-                      24-hour distribution
-                    </span>
+        <AnimatePresence mode="wait" initial={false}>
+          {rhythmMode === 'charts' ? (
+            <motion.div
+              key="charts"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: EASE_OUT_EXPO }}
+              className="grid grid-cols-1 gap-8 lg:grid-cols-2"
+            >
+              {/* Hourly Area Chart */}
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-[13px] font-medium text-white">
+                    Plays by hour
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
+                    <span className="h-2 w-2 rounded-full bg-[var(--chart-1)]" />
+                    24-hour distribution
+                  </span>
+                </div>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart
+                      data={hourlyData}
+                      margin={{ top: 6, right: 8, left: -24, bottom: 0 }}
+                    >
+                      <defs>
+                        <linearGradient id="bsideHourlyFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.36} />
+                          <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0.01} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid
+                        stroke="var(--chart-grid)"
+                        strokeDasharray="2 4"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="shortHour"
+                        tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                        axisLine={{ stroke: 'var(--chart-grid)' }}
+                        tickLine={false}
+                        interval={2}
+                      />
+                      <YAxis
+                        tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        allowDecimals={false}
+                      />
+                      <RechartsTooltip
+                        cursor={{ stroke: 'rgba(255,255,255,0.16)', strokeWidth: 1 }}
+                        content={<ChartTooltip />}
+                        labelFormatter={(val) => `${val}:00`}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="plays"
+                        stroke="var(--chart-1)"
+                        strokeWidth={2}
+                        fill="url(#bsideHourlyFill)"
+                        activeDot={{
+                          r: 4,
+                          fill: 'var(--chart-1)',
+                          stroke: '#09090b',
+                          strokeWidth: 2,
+                        }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Weekday Bar Chart */}
+              <div className="lg:border-l lg:border-white/[0.07] lg:pl-8">
+                <div className="mb-3 flex items-center justify-between">
+                  <span className="text-[13px] font-medium text-white">
+                    Plays by weekday
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
+                    <span className="h-2 w-2 rounded-full bg-[var(--chart-2)]" />
+                    Monday to Sunday
+                  </span>
+                </div>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={weekdayData}
+                      margin={{ top: 6, right: 8, left: -24, bottom: 0 }}
+                    >
+                      <CartesianGrid
+                        stroke="var(--chart-grid)"
+                        strokeDasharray="2 4"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="day"
+                        tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                        axisLine={{ stroke: 'var(--chart-grid)' }}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        allowDecimals={false}
+                      />
+                      <RechartsTooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                        content={<ChartTooltip />}
+                      />
+                      <Bar
+                        dataKey="plays"
+                        fill="var(--chart-2)"
+                        radius={[5, 5, 0, 0]}
+                        maxBarSize={38}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="heatmap"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: EASE_OUT_EXPO }}
+            >
+              <div className="mb-3 flex items-center justify-end gap-1.5 text-[11px] text-[var(--ink-muted)]">
+                <span>Less</span>
+                {[
+                  'var(--heat-0)',
+                  'var(--heat-1)',
+                  'var(--heat-2)',
+                  'var(--heat-3)',
+                  'var(--heat-4)',
+                ].map((color, idx) => (
+                  <span
+                    key={idx}
+                    className="h-3 w-3 rounded-[3px] ring-1 ring-inset ring-white/[0.06]"
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
+                <span>More</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <div className="min-w-[620px]">
+                  <div className="mb-2 grid grid-cols-[44px_repeat(24,minmax(0,1fr))] gap-1.5 font-mono text-[10px] text-[var(--ink-muted)]">
+                    <div />
+                    {HOURS.map((h) => (
+                      <div key={h} className="text-center">
+                        {h % 3 === 0 ? String(h).padStart(2, '0') : ''}
+                      </div>
+                    ))}
                   </div>
-                  <div className="h-56 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
-                        data={hourlyData}
-                        margin={{ top: 6, right: 8, left: -24, bottom: 0 }}
+
+                  <div className="space-y-1.5">
+                    {WEEKDAYS.map((day, dIdx) => (
+                      <div
+                        key={day}
+                        className="grid grid-cols-[44px_repeat(24,minmax(0,1fr))] items-center gap-1.5"
                       >
-                        <defs>
-                          <linearGradient id="bsideHourlyFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.32} />
-                            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0.01} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid
-                          stroke="var(--chart-grid)"
-                          strokeDasharray="2 4"
-                          vertical={false}
-                        />
-                        <XAxis
-                          dataKey="shortHour"
-                          tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
-                          axisLine={{ stroke: 'var(--chart-grid)' }}
-                          tickLine={false}
-                          interval={2}
-                        />
-                        <YAxis
-                          tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
-                          axisLine={false}
-                          tickLine={false}
-                          allowDecimals={false}
-                        />
-                        <RechartsTooltip
-                          cursor={{ stroke: 'rgba(255,255,255,0.16)', strokeWidth: 1 }}
-                          content={<ChartTooltip />}
-                          labelFormatter={(val) => `${val}:00`}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="plays"
-                          stroke="var(--chart-1)"
-                          strokeWidth={2}
-                          fill="url(#bsideHourlyFill)"
-                          activeDot={{
-                            r: 4,
-                            fill: 'var(--chart-1)',
-                            stroke: 'var(--bg-surface)',
-                            strokeWidth: 2,
-                          }}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
+                        <span className="text-[11px] font-medium text-[var(--ink-secondary)]">
+                          {day}
+                        </span>
+                        {HOURS.map((h) => {
+                          const count = stats.heatmap_grid[dIdx]?.[h] ?? 0;
+                          return (
+                            <Tooltip key={h}>
+                              <TooltipTrigger asChild>
+                                <div
+                                  className="h-6 rounded-[4px] ring-1 ring-inset ring-white/[0.05] transition-transform duration-150 ease-out hover:z-10 hover:scale-[1.14] hover:ring-white/30"
+                                  style={{
+                                    backgroundColor: heatCellColor(count, heatmapMax),
+                                  }}
+                                />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <div className="text-xs font-medium text-white">
+                                  {day} ·{' '}
+                                  <span className="font-mono">
+                                    {String(h).padStart(2, '0')}:00–
+                                    {String((h + 1) % 24).padStart(2, '0')}:00
+                                  </span>
+                                </div>
+                                <div className="mt-0.5 text-[11px] text-[var(--accent-ember)] tabular-nums">
+                                  {count} {count === 1 ? 'play' : 'plays'}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
                 </div>
-
-                {/* Weekday Bar Chart */}
-                <div className="lg:border-l lg:border-[var(--border-subtle)] lg:pl-6">
-                  <div className="mb-3 flex items-center justify-between">
-                    <span className="text-[13px] font-medium text-[var(--ink-primary)]">
-                      Plays by weekday
-                    </span>
-                    <span className="flex items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
-                      <span className="h-2 w-2 rounded-full bg-[var(--chart-2)]" />
-                      Monday to Sunday
-                    </span>
-                  </div>
-                  <div className="h-56 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={weekdayData}
-                        margin={{ top: 6, right: 8, left: -24, bottom: 0 }}
-                      >
-                        <CartesianGrid
-                          stroke="var(--chart-grid)"
-                          strokeDasharray="2 4"
-                          vertical={false}
-                        />
-                        <XAxis
-                          dataKey="day"
-                          tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
-                          axisLine={{ stroke: 'var(--chart-grid)' }}
-                          tickLine={false}
-                        />
-                        <YAxis
-                          tick={{ fill: 'var(--chart-axis)', fontSize: 11 }}
-                          axisLine={false}
-                          tickLine={false}
-                          allowDecimals={false}
-                        />
-                        <RechartsTooltip
-                          cursor={{ fill: 'rgba(255,255,255,0.035)' }}
-                          content={<ChartTooltip />}
-                        />
-                        <Bar
-                          dataKey="plays"
-                          fill="var(--chart-2)"
-                          radius={[5, 5, 0, 0]}
-                          maxBarSize={38}
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="heatmap"
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.18, ease: EASE_OUT_EXPO }}
-              >
-                <div className="mb-3 flex items-center justify-end gap-1.5 text-[11px] text-[var(--ink-muted)]">
-                  <span>Less</span>
-                  {[
-                    'var(--heat-0)',
-                    'var(--heat-1)',
-                    'var(--heat-2)',
-                    'var(--heat-3)',
-                    'var(--heat-4)',
-                  ].map((color, idx) => (
-                    <span
-                      key={idx}
-                      className="h-3 w-3 rounded-[3px] ring-1 ring-inset ring-white/[0.06]"
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                  <span>More</span>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <div className="min-w-[620px]">
-                    <div className="mb-2 grid grid-cols-[44px_repeat(24,minmax(0,1fr))] gap-1.5 font-mono text-[10px] text-[var(--ink-muted)]">
-                      <div />
-                      {HOURS.map((h) => (
-                        <div key={h} className="text-center">
-                          {h % 3 === 0 ? String(h).padStart(2, '0') : ''}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      {WEEKDAYS.map((day, dIdx) => (
-                        <div
-                          key={day}
-                          className="grid grid-cols-[44px_repeat(24,minmax(0,1fr))] items-center gap-1.5"
-                        >
-                          <span className="text-[11px] font-medium text-[var(--ink-secondary)]">
-                            {day}
-                          </span>
-                          {HOURS.map((h) => {
-                            const count = stats.heatmap_grid[dIdx]?.[h] ?? 0;
-                            return (
-                              <Tooltip key={h}>
-                                <TooltipTrigger asChild>
-                                  <div
-                                    className="h-6 rounded-[4px] ring-1 ring-inset ring-white/[0.05] transition-transform duration-150 ease-out hover:z-10 hover:scale-[1.14] hover:ring-white/30"
-                                    style={{
-                                      backgroundColor: heatCellColor(count, heatmapMax),
-                                    }}
-                                  />
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <div className="text-xs font-medium text-[var(--ink-primary)]">
-                                    {day} ·{' '}
-                                    <span className="font-mono">
-                                      {String(h).padStart(2, '0')}:00–
-                                      {String((h + 1) % 24).padStart(2, '0')}:00
-                                    </span>
-                                  </div>
-                                  <div className="mt-0.5 text-[11px] text-[var(--accent-ember)] tabular-nums">
-                                    {count} {count === 1 ? 'play' : 'plays'}
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
 
-      {/* Top Tracks & Top Artists */}
-      <section className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+      {/* Top Tracks & Top Artists — 2-col Full-Width Borderless Ranked Lists */}
+      <section className="grid grid-cols-1 gap-10 border-b border-white/[0.07] px-6 py-8 lg:grid-cols-2 lg:px-8">
         {/* Top Tracks */}
-        <div className="bside-card flex flex-col">
-          <div className="border-b border-[var(--border-subtle)] px-5 py-4">
-            <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+        <div className="flex flex-col">
+          <div className="pb-4">
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
               Top tracks
             </h2>
             <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -571,11 +614,9 @@ export function OverviewTab({
             </p>
           </div>
 
-          <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {stats.top_tracks.length === 0 ? (
-              <p className="px-3 py-8 text-center text-xs text-[var(--ink-muted)]">
-                No tracks yet.
-              </p>
+              <p className="py-8 text-xs text-[var(--ink-muted)]">No tracks yet.</p>
             ) : (
               stats.top_tracks.map(([artist, track, plays], idx) => {
                 const match = trackCoverLookup.get(
@@ -585,8 +626,8 @@ export function OverviewTab({
 
                 return (
                   <StaggerItem key={`${artist}-${track}-${idx}`} index={idx}>
-                    <div className="group relative overflow-hidden rounded-[8px] px-3 py-2.5 transition-colors hover:bg-[var(--bg-hover)]">
-                      <div className="relative z-10 flex items-center justify-between gap-3">
+                    <div className="group -mx-2.5 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
+                      <div className="flex items-center justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-3">
                           <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
                             {String(idx + 1).padStart(2, '0')}
@@ -603,12 +644,12 @@ export function OverviewTab({
                                 href={match.spotifyUrl}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="block truncate text-[13px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
+                                className="block truncate text-[13px] font-medium text-white transition-colors hover:text-[var(--accent-ember)]"
                               >
                                 {track}
                               </a>
                             ) : (
-                              <div className="truncate text-[13px] font-medium text-[var(--ink-primary)]">
+                              <div className="truncate text-[13px] font-medium text-white">
                                 {track}
                               </div>
                             )}
@@ -632,7 +673,7 @@ export function OverviewTab({
                             delay: Math.min(idx * 0.03, 0.2),
                             ease: EASE_OUT_EXPO,
                           }}
-                          className="h-full rounded-full bg-[var(--accent-ember)]/80"
+                          className="h-full rounded-full bg-[var(--accent-ember)]/85"
                         />
                       </div>
                     </div>
@@ -644,9 +685,9 @@ export function OverviewTab({
         </div>
 
         {/* Top Artists */}
-        <div className="bside-card flex flex-col">
-          <div className="border-b border-[var(--border-subtle)] px-5 py-4">
-            <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+        <div className="flex flex-col">
+          <div className="pb-4">
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
               Top artists
             </h2>
             <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -654,23 +695,21 @@ export function OverviewTab({
             </p>
           </div>
 
-          <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {stats.top_artists.length === 0 ? (
-              <p className="px-3 py-8 text-center text-xs text-[var(--ink-muted)]">
-                No artists yet.
-              </p>
+              <p className="py-8 text-xs text-[var(--ink-muted)]">No artists yet.</p>
             ) : (
               stats.top_artists.map(([artist, plays], idx) => {
                 const pct = Math.max(4, (plays / maxTopArtist) * 100);
                 return (
                   <StaggerItem key={`${artist}-${idx}`} index={idx}>
-                    <div className="group rounded-[8px] px-3 py-2.5 transition-colors hover:bg-[var(--bg-hover)]">
+                    <div className="group -mx-2.5 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex min-w-0 items-center gap-3">
                           <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
                             {String(idx + 1).padStart(2, '0')}
                           </span>
-                          <span className="truncate text-[13px] font-medium text-[var(--ink-primary)]">
+                          <span className="truncate text-[13px] font-medium text-white">
                             {artist}
                           </span>
                         </div>
@@ -688,7 +727,7 @@ export function OverviewTab({
                             delay: Math.min(idx * 0.03, 0.2),
                             ease: EASE_OUT_EXPO,
                           }}
-                          className="h-full rounded-full bg-[var(--accent-ember)]/70"
+                          className="h-full rounded-full bg-[var(--accent-ember)]/75"
                         />
                       </div>
                     </div>
@@ -700,11 +739,11 @@ export function OverviewTab({
         </div>
       </section>
 
-      {/* Context Breakdown & Release Decades */}
-      <section className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div className="bside-card flex flex-col">
-          <div className="border-b border-[var(--border-subtle)] px-5 py-4">
-            <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+      {/* Listening Sources & Release Decades */}
+      <section className="grid grid-cols-1 gap-10 border-b border-white/[0.07] px-6 py-8 lg:grid-cols-2 lg:px-8">
+        <div>
+          <div className="pb-4">
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
               Listening sources
             </h2>
             <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -712,14 +751,14 @@ export function OverviewTab({
             </p>
           </div>
 
-          <div className="space-y-3.5 p-5">
+          <div className="space-y-4 border-t border-white/[0.07] pt-5">
             {stats.context_breakdown.map(([ctx, plays], idx) => {
               const share = Math.round((plays / stats.total_plays) * 100);
               const pct = Math.max(3, (plays / maxContext) * 100);
               return (
                 <div key={ctx} className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium text-[var(--ink-primary)]">
+                    <span className="font-medium text-white">
                       {formatContextLabel(ctx)}
                     </span>
                     <span className="text-[var(--ink-secondary)] tabular-nums">
@@ -735,7 +774,7 @@ export function OverviewTab({
                         delay: Math.min(idx * 0.04, 0.2),
                         ease: EASE_OUT_EXPO,
                       }}
-                      className="h-full rounded-full bg-[var(--accent-blue)]/80"
+                      className="h-full rounded-full bg-[var(--accent-blue)]/85"
                     />
                   </div>
                 </div>
@@ -744,11 +783,11 @@ export function OverviewTab({
           </div>
         </div>
 
-        <div className="bside-card flex flex-col">
-          <div className="border-b border-[var(--border-subtle)] px-5 py-4">
+        <div>
+          <div className="pb-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+                <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                   Release decades
                 </h2>
                 <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -769,17 +808,15 @@ export function OverviewTab({
             </div>
 
             {deepCut && (
-              <div className="mt-3 flex items-center gap-2 rounded-[8px] bg-[var(--bg-inset)] px-3 py-2 text-xs ring-1 ring-inset ring-white/[0.05]">
-                <span className="truncate font-medium text-[var(--ink-primary)]">
-                  {deepCut[1]}
-                </span>
+              <div className="mt-3 flex items-center gap-2 border-l-2 border-[var(--accent-ember)]/70 pl-3 text-xs">
+                <span className="truncate font-medium text-white">{deepCut[1]}</span>
                 <span className="text-[var(--ink-muted)]">·</span>
                 <span className="truncate text-[var(--ink-secondary)]">{deepCut[0]}</span>
               </div>
             )}
           </div>
 
-          <div className="space-y-3.5 p-5">
+          <div className="space-y-4 border-t border-white/[0.07] pt-5">
             {stats.release_decades.length === 0 ? (
               <p className="text-xs text-[var(--ink-muted)]">
                 No release metadata available yet.
@@ -790,9 +827,7 @@ export function OverviewTab({
                 return (
                   <div key={decade} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-[var(--ink-primary)] tabular-nums">
-                        {decade}
-                      </span>
+                      <span className="font-medium text-white tabular-nums">{decade}</span>
                       <span className="text-[var(--ink-secondary)] tabular-nums">
                         {plays.toLocaleString()}
                       </span>
@@ -806,7 +841,7 @@ export function OverviewTab({
                           delay: Math.min(idx * 0.04, 0.2),
                           ease: EASE_OUT_EXPO,
                         }}
-                        className="h-full rounded-full bg-[var(--accent-ember)]/80"
+                        className="h-full rounded-full bg-[var(--accent-ember)]/85"
                       />
                     </div>
                   </div>
@@ -817,14 +852,14 @@ export function OverviewTab({
         </div>
       </section>
 
-      {/* Friends Summary & Recent Listens */}
+      {/* Listeners & Recent Listens */}
       {(friendsSummary.length > 0 || recentListens.length > 0) && (
-        <section className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        <section className="grid grid-cols-1 gap-10 px-6 py-8 lg:grid-cols-2 lg:px-8">
           {friendsSummary.length > 0 && (
-            <div className="bside-card flex flex-col">
-              <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-4">
+            <div className="flex flex-col">
+              <div className="flex items-center justify-between pb-4">
                 <div>
-                  <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+                  <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                     Listeners
                   </h2>
                   <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -834,7 +869,7 @@ export function OverviewTab({
                 <Users className="h-4 w-4 text-[var(--ink-muted)]" />
               </div>
 
-              <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+              <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
                 {friendsSummary.slice(0, 8).map((friend, idx) => {
                   const isActive = selectedSet.has(friend.user_uri.toLowerCase());
                   const avatarUrl =
@@ -847,10 +882,10 @@ export function OverviewTab({
                         type="button"
                         onClick={() => onFilterByUser?.(friend.user_uri)}
                         className={cn(
-                          'tactile-press flex w-full items-center justify-between gap-3 rounded-[8px] px-3 py-2.5 text-left transition-colors cursor-pointer',
+                          'tactile-press -mx-2.5 flex w-[calc(100%+1.25rem)] items-center justify-between gap-3 rounded-[8px] px-2.5 py-2.5 text-left transition-colors cursor-pointer',
                           isActive
                             ? 'bg-[var(--accent-ember-soft)]'
-                            : 'hover:bg-[var(--bg-hover)]',
+                            : 'hover:bg-white/[0.055]',
                         )}
                       >
                         <div className="flex min-w-0 items-center gap-3">
@@ -866,9 +901,7 @@ export function OverviewTab({
                               <span
                                 className={cn(
                                   'truncate text-[13px] font-medium',
-                                  isActive
-                                    ? 'text-[var(--accent-ember)]'
-                                    : 'text-[var(--ink-primary)]',
+                                  isActive ? 'text-[var(--accent-ember)]' : 'text-white',
                                 )}
                               >
                                 {friend.user_name}
@@ -884,7 +917,7 @@ export function OverviewTab({
                         </div>
 
                         <div className="shrink-0 text-right">
-                          <div className="text-xs font-medium text-[var(--ink-primary)] tabular-nums">
+                          <div className="text-xs font-medium text-white tabular-nums">
                             {friend.total_plays.toLocaleString()}
                           </div>
                           <div className="font-mono text-[11px] text-[var(--ink-muted)]">
@@ -900,9 +933,9 @@ export function OverviewTab({
           )}
 
           {recentListens.length > 0 && (
-            <div className="bside-card flex flex-col">
-              <div className="border-b border-[var(--border-subtle)] px-5 py-4">
-                <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+            <div className="flex flex-col">
+              <div className="pb-4">
+                <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
                   Recent listens
                 </h2>
                 <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
@@ -910,7 +943,7 @@ export function OverviewTab({
                 </p>
               </div>
 
-              <div className="divide-y divide-[var(--border-subtle)] px-2 py-1">
+              <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
                 {recentListens.slice(0, 8).map((listen, idx) => {
                   const avatarUrl =
                     listen.user_image_url ??
@@ -921,7 +954,7 @@ export function OverviewTab({
 
                   return (
                     <StaggerItem key={listen.id} index={idx}>
-                      <div className="group flex items-center justify-between gap-3 rounded-[8px] px-3 py-2.5 transition-colors hover:bg-[var(--bg-hover)]">
+                      <div className="group -mx-2.5 flex items-center justify-between gap-3 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
                         <div className="flex min-w-0 items-center gap-3">
                           <CoverArt
                             src={listen.cover_url}
@@ -934,7 +967,7 @@ export function OverviewTab({
                               href={listen.spotify_url}
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex max-w-full items-center gap-1 text-[13px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
+                              className="inline-flex max-w-full items-center gap-1 text-[13px] font-medium text-white transition-colors hover:text-[var(--accent-ember)]"
                             >
                               <span className="truncate">{listen.track_name}</span>
                               <ExternalLink className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
@@ -946,7 +979,7 @@ export function OverviewTab({
                               <button
                                 type="button"
                                 onClick={() => onFilterByUser?.(listen.user_uri)}
-                                className="tactile-press inline-flex items-center gap-1.5 text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink-primary)] cursor-pointer"
+                                className="tactile-press inline-flex items-center gap-1.5 text-[var(--ink-secondary)] transition-colors hover:text-white cursor-pointer"
                               >
                                 <UserAvatar
                                   name={listen.user_name}
