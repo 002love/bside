@@ -11,6 +11,20 @@ use crate::spotify::{
 
 use super::{Database, format_timestamp_local, spotify_uri_to_url};
 
+#[derive(Debug, Clone)]
+pub struct LatestUserListen {
+    pub played_at_ms: i64,
+    pub track_uri: String,
+    pub duration_ms: Option<i64>,
+    pub is_playing_seen: bool,
+    pub ended_at_ms: Option<i64>,
+    pub listened_ms: Option<i64>,
+    #[allow(dead_code)]
+    pub was_skipped: Option<bool>,
+    #[allow(dead_code)]
+    pub inferred_repeat: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RepairReport {
     pub merged_duplicates: usize,
@@ -295,6 +309,42 @@ impl Database {
     }
 
     #[allow(dead_code)]
+    pub fn get_latest_listen_for_user(&self, user_uri: &str) -> Result<Option<LatestUserListen>> {
+        use rusqlite::OptionalExtension;
+        let row = self
+            .conn
+            .query_row(
+                "
+                SELECT
+                    played_at_ms, track_uri, duration_ms, is_playing_seen,
+                    ended_at_ms, listened_ms, was_skipped, inferred_repeat
+                FROM listens
+                WHERE user_uri = ?1
+                ORDER BY played_at_ms DESC, id DESC
+                LIMIT 1
+                ",
+                params![user_uri],
+                |row| {
+                    let is_playing_seen: i64 = row.get(3)?;
+                    let skipped_int: Option<i64> = row.get(6)?;
+                    let inferred_int: i64 = row.get(7)?;
+                    Ok(LatestUserListen {
+                        played_at_ms: row.get(0)?,
+                        track_uri: row.get(1)?,
+                        duration_ms: row.get(2)?,
+                        is_playing_seen: is_playing_seen != 0,
+                        ended_at_ms: row.get(4)?,
+                        listened_ms: row.get(5)?,
+                        was_skipped: skipped_int.map(|v| v != 0),
+                        inferred_repeat: inferred_int != 0,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    #[allow(dead_code)]
     pub fn finalize_play(
         &self,
         user_uri: &str,
@@ -305,16 +355,39 @@ impl Database {
         switched_to_next_track: bool,
     ) -> Result<()> {
         let elapsed_ms = (ended_at_ms - played_at_ms).max(0);
+        self.finalize_play_with_listened(
+            user_uri,
+            track_uri,
+            played_at_ms,
+            ended_at_ms,
+            elapsed_ms,
+            duration_ms,
+            switched_to_next_track,
+        )
+    }
+
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn finalize_play_with_listened(
+        &self,
+        user_uri: &str,
+        track_uri: &str,
+        played_at_ms: i64,
+        ended_at_ms: i64,
+        active_listened_ms: i64,
+        duration_ms: Option<i64>,
+        switched_to_next_track: bool,
+    ) -> Result<()> {
+        let active_ms = active_listened_ms.max(0);
         let listened_ms = match duration_ms {
-            Some(d) if d > 0 => Some(elapsed_ms.min(d)),
-            _ => Some(elapsed_ms),
+            Some(d) if d > 0 => Some(active_ms.min(d)),
+            _ => Some(active_ms),
         };
 
         let was_skipped: Option<i64> = if switched_to_next_track {
             match duration_ms {
                 Some(d) if d >= 30_000 => {
                     let threshold = (d / 2).min(d - 15_000);
-                    if elapsed_ms < threshold {
+                    if active_ms < threshold {
                         Some(1)
                     } else {
                         Some(0)
@@ -324,7 +397,7 @@ impl Database {
             }
         } else {
             match duration_ms {
-                Some(d) if d > 0 && elapsed_ms >= (d * 80 / 100) => Some(0),
+                Some(d) if d > 0 && active_ms >= (d * 80 / 100) => Some(0),
                 _ => None,
             }
         };
@@ -591,6 +664,10 @@ impl Database {
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('repair_v2_end_of_track_dedupe', '1')",
             [],
         );
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('repair_v5_stuck_and_pause_resume', '1')",
+            [],
+        );
         Ok(report)
     }
 
@@ -790,7 +867,81 @@ struct RawListenRow {
     context_image_url: Option<String>,
 }
 
+fn row_segment_listened_ms(row: &RawListenRow, after_row: Option<&RawListenRow>) -> i64 {
+    let raw = if let Some(lst) = row.listened_ms {
+        lst.max(0)
+    } else if let Some(end) = row.ended_at_ms {
+        end.saturating_sub(row.played_at_ms).max(0)
+    } else if let Some(an) = after_row
+        && an.track_uri != row.track_uri
+    {
+        let diff = an.played_at_ms.saturating_sub(row.played_at_ms);
+        let cap = row
+            .duration_ms
+            .filter(|&d| d > 0)
+            .map(|d| d + 30_000)
+            .unwrap_or(300_000);
+        if diff >= 0 && diff <= cap { diff } else { 0 }
+    } else {
+        0
+    };
+    match row.duration_ms {
+        Some(d) if d > 0 => raw.min(d),
+        _ => raw,
+    }
+}
+
+fn is_phantom_inferred_repeat_row(
+    row: &RawListenRow,
+    run_dur: Option<i64>,
+    after_row: Option<&RawListenRow>,
+) -> bool {
+    if row.inferred_repeat == 0 {
+        return false;
+    }
+    let phantom_by_next = after_row.is_some_and(|an| {
+        an.track_uri != row.track_uri
+            && an.played_at_ms.saturating_sub(row.played_at_ms) <= 25_000
+    });
+    let raw_elapsed = row
+        .ended_at_ms
+        .map(|e| e.saturating_sub(row.played_at_ms).max(0));
+    let incomplete_or_off_duration = match (run_dur.or(row.duration_ms.filter(|&d| d > 0)), raw_elapsed) {
+        (Some(d), Some(el)) => el < (d * 85) / 100 || el > (d * 115) / 100,
+        (_, None) => true,
+        (None, Some(el)) => el <= 25_000,
+    };
+    phantom_by_next || row.was_skipped == Some(1) || incomplete_or_off_duration
+}
+
 pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Result<RepairReport> {
+    let mut total_merged = 0usize;
+    let mut total_fixed_skips = 0usize;
+
+    // Run until fixed point (at most 3 passes) so deleting orphaned phantom rows immediately
+    // reconciles adjacent rows in a single repair call.
+    for _ in 0..3 {
+        let (merged, fixed) = repair_duplicate_listens_and_skips_pass(conn)?;
+        total_merged += merged;
+        total_fixed_skips += fixed;
+        if merged == 0 && fixed == 0 {
+            break;
+        }
+    }
+
+    let remaining_listens: i64 =
+        conn.query_row("SELECT COUNT(*) FROM listens", [], |row| row.get(0))?;
+
+    Ok(RepairReport {
+        merged_duplicates: total_merged,
+        fixed_skips: total_fixed_skips,
+        remaining_listens: remaining_listens.max(0) as usize,
+    })
+}
+
+fn repair_duplicate_listens_and_skips_pass(conn: &Connection) -> Result<(usize, usize)> {
+    const PAUSE_RESUME_MAX_GAP_MS: i64 = 12 * 60 * 60 * 1000;
+
     let mut by_user: BTreeMap<String, Vec<RawListenRow>> = BTreeMap::new();
     {
         let mut stmt = conn.prepare(
@@ -848,21 +999,59 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
             let base_track = &rows[run_start].track_uri;
             let base_played = rows[run_start].played_at_ms;
             let base_dur = rows[run_start].duration_ms;
+            let mut run_dur = base_dur.filter(|&d| d > 0);
+            let mut run_accumulated_ms =
+                row_segment_listened_ms(&rows[run_start], rows.get(run_start + 1));
+            let mut merged_pause_gap = false;
+            let mut inferred_in_run = usize::from(rows[run_start].inferred_repeat != 0);
+
+            // An orphaned phantom `inferred_repeat = 1` row (e.g., separated from its parent
+            // by an out-of-order track timestamp) should be deleted outright.
+            if rows[run_start].inferred_repeat != 0
+                && (is_phantom_inferred_repeat_row(
+                    &rows[run_start],
+                    run_dur,
+                    rows.get(run_start + 1),
+                ) || rows
+                    .get(run_start + 1)
+                    .is_some_and(|nxt| nxt.track_uri == *base_track && nxt.inferred_repeat != 0))
+            {
+                while run_end + 1 < rows.len()
+                    && rows[run_end + 1].track_uri == *base_track
+                    && rows[run_end + 1].inferred_repeat != 0
+                {
+                    run_end += 1;
+                }
+                for row in &rows[run_start..=run_end] {
+                    ids_to_delete.push(row.id);
+                    merged_duplicates += 1;
+                }
+                i = run_end + 1;
+                continue;
+            }
 
             while run_end + 1 < rows.len() {
                 let next_idx = run_end + 1;
+                let prev = &rows[run_end];
                 let next = &rows[next_idx];
                 if next.track_uri != *base_track {
                     break;
                 }
+                if run_dur.is_none() {
+                    run_dur = next.duration_ms.filter(|&d| d > 0);
+                }
                 let after_next = rows.get(next_idx + 1);
+                let delta_from_base = next.played_at_ms.saturating_sub(base_played);
+                let delta_from_prev = next.played_at_ms.saturating_sub(prev.played_at_ms);
+
                 if next.inferred_repeat == 0 {
-                    let delta_from_base = next.played_at_ms.saturating_sub(base_played);
-                    let should_merge = match base_dur.filter(|&d| d > 0) {
+                    let next_seg_ms = row_segment_listened_ms(next, after_next);
+                    let (should_merge, is_pause_resume) = match run_dur {
                         Some(d) => {
                             let mid_track_cutoff = (d * 85) / 100;
                             let end_of_track_window = d + 25_000;
                             let short_stub_limit = (d / 2).min(30_000);
+                            let tail_stub_limit = (d / 2).min(45_000);
                             let next_is_short_before_distinct = after_next.is_some_and(|an| {
                                 an.track_uri != next.track_uri
                                     && an.played_at_ms.saturating_sub(next.played_at_ms)
@@ -873,38 +1062,73 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
                             }) && after_next
                                 .is_none_or(|an| an.track_uri != next.track_uri);
 
-                            if delta_from_base < mid_track_cutoff {
-                                // Mid-track heartbeat or [LAST] pause/restart duplicate.
-                                true
+                            if delta_from_base < mid_track_cutoff
+                                || delta_from_prev < mid_track_cutoff
+                            {
+                                // Mid-track heartbeat, restart jitter, or [LAST] duplicate.
+                                (true, false)
                             } else if delta_from_base <= end_of_track_window {
                                 // End-of-track transition zone (85%..100%+25s):
                                 // Merge if `next` is a [LAST] snapshot, a short stub right
                                 // before switching/ending, or was falsely marked skipped.
                                 // Preserve genuine back-to-back full repeats!
-                                next.is_playing_seen == 0
+                                let m = next.is_playing_seen == 0
                                     || next_is_short_before_distinct
                                     || next_ended_short
-                                    || next.was_skipped == Some(1)
+                                    || next.was_skipped == Some(1);
+                                (m, false)
+                            } else if delta_from_prev <= PAUSE_RESUME_MAX_GAP_MS {
+                                // Pause-and-resume split within 12 hours:
+                                // 1) Incomplete play (<85% listened) resumed where combined
+                                //    active playback fits in ~1 playthrough (<=125% dur).
+                                // 2) Short tail stub (<min(50% dur, 45s)) finishing a track
+                                //    that was paused near the end.
+                                // 3) Unplayed [LAST] snapshot duplicate.
+                                let combined_fits_one_play = run_accumulated_ms < mid_track_cutoff
+                                    && run_accumulated_ms + next_seg_ms <= (d * 125) / 100;
+                                let is_tail_stub = next_seg_ms > 0
+                                    && next_seg_ms < tail_stub_limit
+                                    && (next.was_skipped == Some(1)
+                                        || next_is_short_before_distinct
+                                        || next_ended_short);
+                                let m = combined_fits_one_play
+                                    || is_tail_stub
+                                    || next.is_playing_seen == 0;
+                                (m, m)
                             } else {
-                                false
+                                (false, false)
                             }
                         }
-                        None => delta_from_base < 180_000,
+                        None => (delta_from_base < 180_000, false),
                     };
+
                     if should_merge {
+                        if is_pause_resume {
+                            merged_pause_gap = true;
+                        }
+                        if next.is_playing_seen != 0 {
+                            run_accumulated_ms = match run_dur {
+                                Some(d) => (run_accumulated_ms + next_seg_ms).min(d),
+                                None => run_accumulated_ms + next_seg_ms,
+                            };
+                        }
                         run_end = next_idx;
                         continue;
                     }
                 } else {
-                    let phantom_by_next = after_next.is_some_and(|an| {
-                        an.track_uri != next.track_uri
-                            && an.played_at_ms.saturating_sub(next.played_at_ms) <= 25_000
+                    // `inferred_repeat == 1`: check for stuck-presence chains, overlapping
+                    // post-restart repeats, or partial/phantom repeats caused by pauses/delays.
+                    let chain_ahead = after_next.is_some_and(|an| {
+                        an.track_uri == *base_track && an.inferred_repeat != 0
                     });
-                    let phantom_by_end = next
-                        .ended_at_ms
-                        .is_some_and(|e| e.saturating_sub(next.played_at_ms) <= 25_000)
-                        && after_next.is_none_or(|an| an.track_uri != next.track_uri);
-                    if phantom_by_next || phantom_by_end {
+                    let part_of_inferred_chain = inferred_in_run >= 1 || chain_ahead;
+                    let overlaps_prev = run_dur.is_some_and(|d| delta_from_prev < (d * 95) / 100);
+
+                    if part_of_inferred_chain
+                        || overlaps_prev
+                        || is_phantom_inferred_repeat_row(next, run_dur, after_next)
+                    {
+                        inferred_in_run += 1;
                         run_end = next_idx;
                         continue;
                     }
@@ -930,11 +1154,24 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
                 .iter()
                 .find_map(|r| r.duration_ms.filter(|&d| d > 0))
                 .or(keeper.duration_ms);
-            let last_ts_in_run = run
+            let last_non_inferred_ts = run
                 .iter()
+                .filter(|r| r.inferred_repeat == 0)
                 .map(|r| r.ended_at_ms.unwrap_or(r.played_at_ms).max(r.played_at_ms))
                 .max()
                 .unwrap_or(base_played);
+            let last_ts_in_run = if inferred_in_run > 0 {
+                // Don't let deleted phantom inferred repeats stretch ended_at_ms by an hour.
+                match merged_dur {
+                    Some(d) if d > 0 => last_non_inferred_ts.min(base_played + d),
+                    _ => last_non_inferred_ts,
+                }
+            } else {
+                run.iter()
+                    .map(|r| r.ended_at_ms.unwrap_or(r.played_at_ms).max(r.played_at_ms))
+                    .max()
+                    .unwrap_or(base_played)
+            };
 
             let next_after_run = rows.get(run_end + 1);
             let session_window = merged_dur
@@ -945,14 +1182,43 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
 
             let followed_by_switch = next_after_run.is_some_and(|nxt| {
                 nxt.track_uri != *base_track
-                    && nxt.played_at_ms >= base_played
+                    && nxt.played_at_ms >= last_ts_in_run
                     && nxt.played_at_ms.saturating_sub(last_ts_in_run) <= session_window
-                    && nxt.played_at_ms.saturating_sub(base_played) <= session_window.saturating_mul(2)
+                    && (merged_pause_gap
+                        || nxt.played_at_ms.saturating_sub(base_played)
+                            <= session_window.saturating_mul(2))
             });
 
-            let (new_ended_at, new_listened_ms, new_was_skipped) = if followed_by_switch {
+            let (new_ended_at, new_listened_ms, new_was_skipped) = if merged_pause_gap {
+                // Merged pause-resume segments: use accumulated active playback time, not
+                // wall-clock elapsed time across the pause gap.
+                let end = if followed_by_switch {
+                    next_after_run.unwrap().played_at_ms
+                } else {
+                    last_ts_in_run
+                };
+                let active_ms = match merged_dur {
+                    Some(d) if d > 0 => run_accumulated_ms.min(d),
+                    _ => run_accumulated_ms,
+                };
+                let skipped = if followed_by_switch && merged_is_playing != 0 {
+                    match merged_dur {
+                        Some(d) if d >= 30_000 => {
+                            let threshold = (d / 2).min(d - 15_000);
+                            Some(if active_ms < threshold { 1 } else { 0 })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    match merged_dur {
+                        Some(d) if d > 0 && active_ms >= (d * 80 / 100) => Some(0),
+                        _ => None,
+                    }
+                };
+                (Some(end), Some(active_ms), skipped)
+            } else if followed_by_switch && inferred_in_run == 0 {
                 let nxt = next_after_run.unwrap();
-                if merged_is_playing != 0 || keeper.was_skipped.is_some() || merged_count > 0 {
+                if merged_count > 0 || keeper.ended_at_ms.is_none() {
                     let end = nxt.played_at_ms;
                     let elapsed = (end - base_played).max(0);
                     let listened = match merged_dur {
@@ -974,26 +1240,20 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
                 } else {
                     (keeper.ended_at_ms, keeper.listened_ms, keeper.was_skipped)
                 }
-            } else {
-                let end_opt = if merged_count > 0 {
-                    Some(last_ts_in_run)
-                } else {
-                    keeper.ended_at_ms
+            } else if merged_count > 0 {
+                let end = last_ts_in_run;
+                let elapsed = (end - base_played).max(0);
+                let listened = match merged_dur {
+                    Some(d) if d > 0 => Some(elapsed.min(d)),
+                    _ => Some(elapsed),
                 };
-                if let Some(end) = end_opt {
-                    let elapsed = (end - base_played).max(0);
-                    let listened = match merged_dur {
-                        Some(d) if d > 0 => Some(elapsed.min(d)),
-                        _ => Some(elapsed),
-                    };
-                    let skipped = match merged_dur {
-                        Some(d) if d > 0 && elapsed >= (d * 80 / 100) => Some(0),
-                        _ => None,
-                    };
-                    (Some(end), listened, skipped)
-                } else {
-                    (None, keeper.listened_ms, None)
-                }
+                let skipped = match merged_dur {
+                    Some(d) if d > 0 && elapsed >= (d * 80 / 100) => Some(0),
+                    _ => None,
+                };
+                (Some(end), listened, skipped)
+            } else {
+                (keeper.ended_at_ms, keeper.listened_ms, keeper.was_skipped)
             };
 
             if new_was_skipped != keeper.was_skipped {
@@ -1053,14 +1313,7 @@ pub(super) fn repair_duplicate_listens_and_skips_conn(conn: &Connection) -> Resu
         tx.commit()?;
     }
 
-    let remaining_listens: i64 =
-        conn.query_row("SELECT COUNT(*) FROM listens", [], |row| row.get(0))?;
-
-    Ok(RepairReport {
-        merged_duplicates,
-        fixed_skips,
-        remaining_listens: remaining_listens.max(0) as usize,
-    })
+    Ok((merged_duplicates, fixed_skips))
 }
 
 #[cfg(test)]
@@ -1521,6 +1774,254 @@ mod repair_tests {
             assert_eq!(play.was_skipped, Some(false));
             assert_eq!(play.listened_ms, Some(dur));
         }
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stuck_inferred_repeat_chains_and_interleaved_restart_collapse_to_one() {
+        let (dir, db) = temp_db("stuck_inferred_chain");
+        let t0 = 1_795_607_888_000i64;
+        let dur = 157_720i64;
+
+        // Reproduces wrobelek's Tak to lecialo: 1 real play + 10 inferred repeats +
+        // 1 restart duplicate (+129s) + 10 MORE interleaved inferred repeats = 22 rows!
+        let p1 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:tak",
+            "Tak to lecialo",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p1).unwrap();
+        db.finalize_play("spotify:user:wrobelek", "spotify:track:tak", t0, t0 + dur, Some(dur), false)
+            .unwrap();
+        for k in 1..=10i64 {
+            let cyc = t0 + dur * k;
+            db.insert_inferred_repeat(&p1, cyc).unwrap();
+            db.finalize_play("spotify:user:wrobelek", "spotify:track:tak", cyc, cyc + dur, Some(dur), false)
+                .unwrap();
+        }
+
+        // Restart duplicate 129.2s after t0 + 10 more interleaved inferred repeats
+        let t_restart = t0 + 129_152;
+        let p_restart = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:tak",
+            "Tak to lecialo",
+            t_restart,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p_restart).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:tak",
+            t_restart,
+            t_restart + dur,
+            Some(dur),
+            false,
+        )
+        .unwrap();
+        for k in 1..=10i64 {
+            let cyc = t_restart + dur * k;
+            db.insert_inferred_repeat(&p_restart, cyc).unwrap();
+            db.finalize_play(
+                "spotify:user:wrobelek",
+                "spotify:track:tak",
+                cyc,
+                cyc + dur,
+                Some(dur),
+                false,
+            )
+            .unwrap();
+        }
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 21);
+        assert_eq!(report.remaining_listens, 1);
+
+        let history = db.query_history(None, None, None).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].played_at_ms, t0);
+        assert_eq!(history[0].listened_ms, Some(dur));
+        assert_eq!(history[0].was_skipped, Some(false));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pause_resume_splits_collapse_preserving_accumulated_listened_ms() {
+        let (dir, db) = temp_db("pause_resume_repair");
+        let t0 = 1_795_600_000_000i64;
+        let dur = 220_000i64;
+
+        // 3-part pause-resume split across 20 minutes: 34s + 46s + 100s = 180s
+        let segs = [(0i64, 34_000i64, false), (713_000, 46_000, false), (1_178_000, 100_000, true)];
+        for (offset, len, switched) in segs {
+            let act = make_activity(
+                "spotify:user:ksiksen",
+                "Ksiksen",
+                "spotify:track:lvl",
+                "LVL",
+                t0 + offset,
+                Some(dur),
+                true,
+            );
+            db.insert_listen(&act).unwrap();
+            db.finalize_play(
+                "spotify:user:ksiksen",
+                "spotify:track:lvl",
+                t0 + offset,
+                t0 + offset + len,
+                Some(dur),
+                switched,
+            )
+            .unwrap();
+        }
+        let next = make_activity(
+            "spotify:user:ksiksen",
+            "Ksiksen",
+            "spotify:track:landline",
+            "Landline",
+            t0 + 1_278_000,
+            Some(160_000),
+            true,
+        );
+        db.insert_listen(&next).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 2);
+        assert_eq!(report.remaining_listens, 2);
+
+        let history = db.query_history(None, None, None).unwrap();
+        let lvl = history.iter().find(|r| r.track_uri == "spotify:track:lvl").unwrap();
+        assert_eq!(lvl.played_at_ms, t0);
+        assert_eq!(lvl.listened_ms, Some(180_000));
+        assert_eq!(lvl.was_skipped, Some(false));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn near_end_pause_and_short_tail_resume_collapses_into_one() {
+        let (dir, db) = temp_db("tail_stub_repair");
+        let t0 = 1_795_600_000_000i64;
+        let dur = 247_000i64;
+
+        // Play 1: 236s (95.5%), paused. Play 2: 5 min later, 12s tail marked skipped.
+        let p1 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:patrz",
+            "patrz mi w oczy",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p1).unwrap();
+        db.finalize_play("spotify:user:wrobelek", "spotify:track:patrz", t0, t0 + 236_000, Some(dur), false)
+            .unwrap();
+
+        let p2 = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:patrz",
+            "patrz mi w oczy",
+            t0 + 316_000,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p2).unwrap();
+        db.finalize_play(
+            "spotify:user:wrobelek",
+            "spotify:track:patrz",
+            t0 + 316_000,
+            t0 + 328_000,
+            Some(dur),
+            true,
+        )
+        .unwrap();
+
+        let next = make_activity(
+            "spotify:user:wrobelek",
+            "wrobelek",
+            "spotify:track:deli",
+            "DELI SUPREME",
+            t0 + 328_000,
+            Some(151_000),
+            true,
+        );
+        db.insert_listen(&next).unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 1);
+        assert_eq!(report.remaining_listens, 2);
+
+        let history = db.query_history(None, None, None).unwrap();
+        let patrz = history.iter().find(|r| r.track_uri == "spotify:track:patrz").unwrap();
+        assert_eq!(patrz.played_at_ms, t0);
+        assert_eq!(patrz.listened_ms, Some(dur));
+        assert_eq!(patrz.was_skipped, Some(false));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn orphaned_phantom_inferred_repeat_separated_by_out_of_order_track_is_deleted() {
+        let (dir, db) = temp_db("orphaned_inferred_repeat");
+        let t0 = 1_795_600_000_000i64;
+        let dur = 232_000i64;
+
+        let p1 = make_activity(
+            "spotify:user:maks1m",
+            "maks1m-c",
+            "spotify:track:stars",
+            "All The Stars",
+            t0,
+            Some(dur),
+            true,
+        );
+        db.insert_listen(&p1).unwrap();
+        db.finalize_play("spotify:user:maks1m", "spotify:track:stars", t0, t0 + dur, Some(dur), false)
+            .unwrap();
+
+        // Out-of-order next track timestamp lands BEFORE the phantom inferred repeat.
+        let mid = make_activity(
+            "spotify:user:maks1m",
+            "maks1m-c",
+            "spotify:track:sigala",
+            "Melody",
+            t0 + 204_000,
+            Some(167_000),
+            true,
+        );
+        db.insert_listen(&mid).unwrap();
+
+        // Orphaned phantom inferred repeat at t0 + 232s with 0s duration before skip.
+        db.insert_inferred_repeat(&p1, t0 + dur).unwrap();
+        db.finalize_play(
+            "spotify:user:maks1m",
+            "spotify:track:stars",
+            t0 + dur,
+            t0 + dur,
+            Some(dur),
+            true,
+        )
+        .unwrap();
+
+        let report = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(report.merged_duplicates, 1);
+        assert_eq!(report.remaining_listens, 2);
+
+        // Second repair pass must be strictly idempotent.
+        let second = db.repair_duplicate_listens_and_skips().unwrap();
+        assert_eq!(second.merged_duplicates, 0);
+        assert_eq!(second.fixed_skips, 0);
+        assert_eq!(second.remaining_listens, 2);
 
         let _ = std::fs::remove_dir_all(dir);
     }
