@@ -891,18 +891,18 @@ export function LiveNowSection({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.22, ease: EASE_OUT_EXPO }}
-                className="group flex flex-col gap-6 sm:flex-row sm:items-end"
+                className="group flex flex-col gap-6 sm:flex-row sm:items-stretch"
               >
                 <CoverArt
                   src={spotlightFriend.cover_url}
                   alt={spotlightFriend.track_name}
                   size="xl"
-                  className="h-36 w-36 shrink-0 shadow-[var(--shadow-art)]"
+                  className="h-44 w-44 shrink-0 self-start shadow-[var(--shadow-art)]"
                   hoverZoom
                 />
 
-                <div className="min-w-0 flex-1 space-y-3">
-                  {/* Listener row */}
+                <div className="flex min-w-0 flex-1 flex-col justify-between gap-2.5 py-0.5">
+                  {/* Listener row — flush with top of artwork */}
                   <div className="flex flex-wrap items-center gap-2.5">
                     <button
                       type="button"
@@ -963,49 +963,50 @@ export function LiveNowSection({
                     </div>
                   </div>
 
-                  {/* Playlist Context + Spotify Link */}
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                    {renderContextButton(spotlightFriend)}
-                    <a
-                      href={spotlightFriend.spotify_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="tactile-press inline-flex items-center gap-1.5 text-xs font-medium text-white/70 transition-colors hover:text-white"
-                    >
-                      <span>Open in Spotify</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
-
-                  {/* Crisp 3px Progress Bar in Dynamic Cover Color */}
-                  {spotlightProgress && (
-                    <div className="max-w-2xl space-y-1.5 pt-1">
-                      <div className="h-[3px] w-full overflow-hidden rounded-full bg-white/[0.12]">
-                        <div
-                          className="h-full rounded-full transition-[width] duration-1000 ease-linear"
-                          style={{
-                            width: spotlightProgress.hasDuration
-                              ? `${spotlightProgress.pct}%`
-                              : '100%',
-                            backgroundColor: spotlightPalette.accent,
-                            boxShadow: `0 0 12px ${spotlightPalette.soft}`,
-                          }}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between font-mono text-[11px] tabular-nums text-white/65">
-                        <span>
-                          {spotlightProgress.elapsed != null
-                            ? formatDuration(spotlightProgress.elapsed)
-                            : 'Live'}
-                        </span>
-                        <span>
-                          {spotlightProgress.hasDuration
-                            ? formatDuration(spotlightFriend.duration_ms)
-                            : '--:--'}
-                        </span>
-                      </div>
+                  {/* Bottom group: Context + Progress Bar flush with bottom of artwork */}
+                  <div className="space-y-2.5">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      {renderContextButton(spotlightFriend)}
+                      <a
+                        href={spotlightFriend.spotify_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="tactile-press inline-flex items-center gap-1.5 text-xs font-medium text-white/70 transition-colors hover:text-white"
+                      >
+                        <span>Open in Spotify</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
                     </div>
-                  )}
+
+                    {spotlightProgress && (
+                      <div className="max-w-2xl space-y-1">
+                        <div className="h-[3px] w-full overflow-hidden rounded-full bg-white/[0.12]">
+                          <div
+                            className="h-full rounded-full transition-[width] duration-1000 ease-linear"
+                            style={{
+                              width: spotlightProgress.hasDuration
+                                ? `${spotlightProgress.pct}%`
+                                : '100%',
+                              backgroundColor: spotlightPalette.accent,
+                              boxShadow: `0 0 12px ${spotlightPalette.soft}`,
+                            }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between font-mono text-[11px] tabular-nums text-white/65">
+                          <span>
+                            {spotlightProgress.elapsed != null
+                              ? formatDuration(spotlightProgress.elapsed)
+                              : 'Live'}
+                          </span>
+                          <span>
+                            {spotlightProgress.hasDuration
+                              ? formatDuration(spotlightFriend.duration_ms)
+                              : '--:--'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </motion.div>
             </AnimatePresence>
