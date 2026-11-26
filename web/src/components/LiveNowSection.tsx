@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
+  AlertCircle,
   ArrowRight,
   ChevronDown,
-  ChevronUp,
   ExternalLink,
-  Filter,
   Loader2,
   Lock,
   LogIn,
-  Radio,
   RefreshCw,
+  WifiOff,
 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  AmbientArtGlow,
+  EASE_OUT_EXPO,
+  SPRING_SMOOTH,
+  StaggerItem,
+} from '@/components/ui/motion';
+import { CoverArt } from '@/components/CoverArt';
 import { InfoTooltip } from '@/components/InfoTooltip';
-import { PixelDot, PixelEq } from '@/components/PixelEq';
+import { PixelEq } from '@/components/PixelEq';
 import { PlaylistCover } from '@/components/PlaylistCover';
 import { UserAvatar, lookupAvatar } from '@/components/UserAvatar';
-import { VinylSleeve } from '@/components/VinylSleeve';
 import type { UseLiveFeedResult } from '@/hooks/useLiveFeed';
 import { cn, formatContextLabel, formatDuration, formatRelativeTime } from '@/lib/utils';
 import type { AvatarMap, LiveFriendItem, LiveSnapshot } from '@/types/api';
@@ -44,8 +49,8 @@ interface TransportBadgeInfo {
 export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBadgeInfo {
   if (!snapshot) {
     return {
-      label: 'OFFLINE',
-      shortLabel: 'OFFLINE',
+      label: 'Offline',
+      shortLabel: 'Offline',
       tone: 'muted',
       isPush: false,
       tooltip: 'Realtime transport is offline',
@@ -57,8 +62,8 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
   switch (transport) {
     case 'dealer_push':
       return {
-        label: 'WS DEALER · REALTIME',
-        shortLabel: 'WS PUSH',
+        label: 'Realtime stream',
+        shortLabel: 'Realtime',
         tone: 'sage',
         isPush: true,
         tooltip: 'Sub-second Spotify Dealer WebSocket push (with automatic fallback)',
@@ -66,8 +71,8 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
       };
     case 'mercury_push':
       return {
-        label: 'MERCURY · REALTIME',
-        shortLabel: 'MERCURY PUSH',
+        label: 'Realtime stream',
+        shortLabel: 'Realtime',
         tone: 'sage',
         isPush: true,
         tooltip: 'Spotify Mercury pub/sub push (with automatic HTTP polling fallback)',
@@ -77,9 +82,9 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
       const hasInterval = snapshot.poll_interval_secs > 0;
       return {
         label: hasInterval
-          ? `HTTP POLL · ${snapshot.poll_interval_secs}S FALLBACK`
-          : 'HTTP POLL FALLBACK',
-        shortLabel: hasInterval ? `POLL ${snapshot.poll_interval_secs}S` : 'POLL',
+          ? `Polling every ${snapshot.poll_interval_secs}s`
+          : 'Polling fallback',
+        shortLabel: hasInterval ? `${snapshot.poll_interval_secs}s poll` : 'Polling',
         tone: 'amber',
         isPush: false,
         tooltip: 'Automatic HTTP polling fallback',
@@ -88,8 +93,8 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
     }
     case 'offline':
       return {
-        label: 'OFFLINE',
-        shortLabel: 'OFFLINE',
+        label: 'Offline',
+        shortLabel: 'Offline',
         tone: 'muted',
         isPush: false,
         tooltip: 'Realtime transport is offline',
@@ -97,10 +102,11 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
       };
     default:
       if (transport) {
-        const normalized = transport.toUpperCase();
+        const normalized = transport.replace(/_/g, ' ');
+        const formatted = normalized.charAt(0).toUpperCase() + normalized.slice(1);
         return {
-          label: normalized,
-          shortLabel: normalized,
+          label: formatted,
+          shortLabel: formatted,
           tone: 'muted',
           isPush: false,
           tooltip: `Realtime transport: ${transport}`,
@@ -109,8 +115,8 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
       }
       if (snapshot.poll_interval_secs) {
         return {
-          label: `${snapshot.poll_interval_secs}S SSE STREAM`,
-          shortLabel: `${snapshot.poll_interval_secs}S SSE`,
+          label: `Live stream (${snapshot.poll_interval_secs}s)`,
+          shortLabel: `${snapshot.poll_interval_secs}s stream`,
           tone: 'muted',
           isPush: false,
           tooltip: 'Server-Sent Events live stream',
@@ -118,8 +124,8 @@ export function formatTransportBadge(snapshot: LiveSnapshot | null): TransportBa
         };
       }
       return {
-        label: 'OFFLINE',
-        shortLabel: 'OFFLINE',
+        label: 'Offline',
+        shortLabel: 'Offline',
         tone: 'muted',
         isPush: false,
         tooltip: 'Realtime transport is offline',
@@ -132,7 +138,7 @@ function formatContextTag(item: LiveFriendItem): string {
   const base =
     item.context_name ||
     (item.context_type ? formatContextLabel(item.context_type) : null);
-  if (!base) return item.context_is_private ? 'Private' : 'Direct Play';
+  if (!base) return item.context_is_private ? 'Private' : 'Direct play';
   return base;
 }
 
@@ -140,14 +146,16 @@ function getStatusBanner(snapshot: LiveSnapshot | null, loading: boolean) {
   if (loading && !snapshot) {
     return {
       tone: 'muted' as const,
-      label: 'CONNECTING',
+      kind: 'connecting' as const,
+      label: 'Connecting',
       text: 'Opening realtime stream to local Spotify Friend Activity daemon...',
     };
   }
   if (!snapshot) {
     return {
       tone: 'muted' as const,
-      label: 'OFFLINE',
+      kind: 'offline' as const,
+      label: 'Live feed offline',
       text: 'Realtime live feed is unavailable. Historical SQLite analytics remain active.',
     };
   }
@@ -158,27 +166,35 @@ function getStatusBanner(snapshot: LiveSnapshot | null, loading: boolean) {
     case 'connecting':
       return {
         tone: 'amber' as const,
-        label: 'CONNECTING',
+        kind: 'connecting' as const,
+        label: 'Connecting',
         text: snapshot.message || 'Connecting to Spotify via librespot...',
       };
     case 'unauthenticated':
       return {
         tone: 'amber' as const,
-        label: 'UNAUTHENTICATED',
+        kind: 'auth' as const,
+        label: 'Spotify not connected',
         text: snapshot.message || 'Connect your Spotify account to enable live friend activity.',
       };
     case 'error':
       return {
         tone: 'rust' as const,
-        label: 'STREAM ERROR',
+        kind: 'error' as const,
+        label: 'Stream error',
         text: snapshot.message || 'Live feed encountered an upstream error. Retrying automatically.',
       };
-    default:
+    default: {
+      const statusLabel = snapshot.status
+        ? snapshot.status.charAt(0).toUpperCase() + snapshot.status.slice(1)
+        : 'Offline';
       return {
         tone: 'muted' as const,
-        label: snapshot.status ? snapshot.status.toUpperCase() : 'OFFLINE',
+        kind: 'offline' as const,
+        label: statusLabel,
         text: snapshot.message || 'Live polling is currently paused or offline.',
       };
+    }
   }
 }
 
@@ -274,7 +290,7 @@ export function LiveNowSection({
   const resolveAvatar = (friend: LiveFriendItem) =>
     friend.user_image_url ?? lookupAvatar(avatarMap, friend.user_uri, friend.user_name);
 
-  const renderContextChip = (friend: LiveFriendItem, compact = false) => {
+  const renderContextButton = (friend: LiveFriendItem, compact = false) => {
     const label = formatContextTag(friend);
     const canOpenPlaylist = Boolean(friend.context_uri && onSelectPlaylist);
 
@@ -287,22 +303,17 @@ export function LiveNowSection({
           isPrivate={friend.context_is_private}
           size="xs"
         />
-        {friend.context_is_private && <Lock className="h-2.5 w-2.5 shrink-0 text-[var(--warning)]" />}
-        <span className="truncate">{label}</span>
         {friend.context_is_private && (
-          <span className="shrink-0 font-mono text-[9px] uppercase text-[var(--warning)]">
-            Private
-          </span>
+          <Lock className="h-3 w-3 shrink-0 text-[var(--warning)]/85" />
         )}
+        <span className="truncate">{label}</span>
       </>
     );
 
-    const baseClasses = cn(
-      'inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border px-2 py-0.5 text-[11px] font-medium transition-colors',
-      compact ? 'max-w-[180px]' : 'max-w-[240px]',
-      friend.context_is_private
-        ? 'border-[var(--warning)]/40 bg-[var(--warning-soft)] text-[var(--ink-primary)]'
-        : 'border-[var(--border-subtle)] bg-[var(--bg-inset)] text-[var(--ink-secondary)]',
+    const sharedClasses = cn(
+      'inline-flex items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 text-[11.5px] font-medium transition-colors',
+      compact ? 'max-w-[170px]' : 'max-w-[240px]',
+      'text-[var(--ink-secondary)]',
     );
 
     if (canOpenPlaylist && friend.context_uri) {
@@ -312,8 +323,8 @@ export function LiveNowSection({
             type="button"
             onClick={() => onSelectPlaylist?.(friend.context_uri!)}
             className={cn(
-              baseClasses,
-              'cursor-pointer hover:border-[var(--border-accent)] hover:bg-[var(--bg-hover)] hover:text-[var(--accent-primary)]',
+              sharedClasses,
+              'tactile-press -ml-1.5 cursor-pointer hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
             )}
           >
             {inner}
@@ -322,362 +333,356 @@ export function LiveNowSection({
       );
     }
 
-    return <span className={baseClasses}>{inner}</span>;
+    return <span className={cn(sharedClasses, '-ml-1.5')}>{inner}</span>;
+  };
+
+  const renderConnectCta = (size: 'sm' | 'md') => (
+    <Button
+      type="button"
+      size={size}
+      onClick={() => void handleConnectSpotify()}
+      disabled={loggingIn}
+      className="border-transparent bg-[#1db954] font-medium text-[#051209] hover:bg-[#1ed760]"
+    >
+      {loggingIn ? (
+        <>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>Waiting for browser login...</span>
+        </>
+      ) : (
+        <>
+          <LogIn className="h-3.5 w-3.5" />
+          <span>Connect Spotify</span>
+        </>
+      )}
+    </Button>
+  );
+
+  const renderBannerIcon = (kind: 'connecting' | 'auth' | 'error' | 'offline') => {
+    switch (kind) {
+      case 'connecting':
+        return <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--warning)]" />;
+      case 'error':
+        return <AlertCircle className="h-4 w-4 shrink-0 text-[var(--danger)]" />;
+      case 'auth':
+        return <LogIn className="h-4 w-4 shrink-0 text-[var(--ink-secondary)]" />;
+      default:
+        return <WifiOff className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />;
+    }
   };
 
   if (mode === 'compact') {
     return (
-      <section className="bside-card overflow-hidden">
-        {/* Compact Strip Header */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border-subtle)] bg-[var(--bg-inset)] px-4 py-2.5">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[var(--ink-muted)]">
-              On Air
-            </span>
-            <span className="h-3 w-px bg-[var(--border-subtle)]" />
-            <span className="inline-flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-primary)]">
-              <PixelDot
-                active={spinningFriends.length > 0}
-                tone={spinningFriends.length > 0 ? 'sage' : banner ? banner.tone : 'muted'}
-              />
+      <section className="overflow-hidden rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+        {/* Compact Header */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <PixelEq active={spinningFriends.length > 0} />
+            <span className="font-medium text-[var(--ink-primary)]">
               {spinningFriends.length > 0
-                ? `${spinningFriends.length} spinning now`
+                ? `${spinningFriends.length} listening now`
                 : banner
                   ? banner.label
-                  : '0 spinning now'}
+                  : 'No one listening'}
             </span>
             {hasFilter && hiddenCount > 0 && (
-              <Badge variant="info" className="gap-1">
-                <Filter className="h-2.5 w-2.5" />
-                Filtered ({visibleFriends.length}/{allFriends.length})
-              </Badge>
-            )}
-            {isLive && transport.hasExplicitTransport && (
-              <Badge
-                variant={
-                  transport.tone === 'sage'
-                    ? 'default'
-                    : transport.tone === 'amber'
-                      ? 'warning'
-                      : 'outline'
-                }
-                title={transport.tooltip}
-                className="text-[9px] leading-none"
-              >
-                {transport.shortLabel}
-              </Badge>
+              <span className="text-[var(--ink-muted)] tabular-nums">
+                &middot; Filtered ({visibleFriends.length}/{allFriends.length})
+              </span>
             )}
             {snapshot?.updated_at_ms && (
-              <span className="hidden font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)] sm:inline">
-                &middot; Synced {lastSyncLabel}
-              </span>
+              <InfoTooltip content={transport.tooltip} side="bottom">
+                <span className="hidden cursor-default text-[var(--ink-muted)] sm:inline">
+                  &middot; {isLive ? transport.shortLabel : 'Offline'} &middot;{' '}
+                  <span className="font-mono text-[11px] tabular-nums">{lastSyncLabel}</span>
+                </span>
+              </InfoTooltip>
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Button
               variant="ghost"
               size="sm"
               onClick={pollNow}
               disabled={polling}
-              className="h-6 px-2 text-[10px]"
+              className="h-7 px-2 text-[11.5px]"
             >
               <RefreshCw className={cn('h-3 w-3', polling && 'animate-spin')} />
-              {isLive && transport.isPush ? 'Sync' : 'Poll'}
+              <span>{isLive && transport.isPush ? 'Sync' : 'Refresh'}</span>
             </Button>
             {onOpenFull && (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={onOpenFull}
-                className="h-6 px-2 text-[10px]"
+                className="h-7 px-2 text-[11.5px] text-[var(--ink-primary)]"
               >
-                Live Deck
-                <ArrowRight className="h-3 w-3" />
+                <span>View all live</span>
+                <ArrowRight className="h-3 w-3 text-[var(--ink-muted)]" />
               </Button>
             )}
             <button
               type="button"
               onClick={() => setCollapsed((c) => !c)}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] cursor-pointer"
-              title={collapsed ? 'Expand Live Now strip' : 'Collapse Live Now strip'}
-              aria-label={collapsed ? 'Expand Live Now strip' : 'Collapse Live Now strip'}
+              className="tactile-press inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--ink-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]"
+              title={collapsed ? 'Expand Live Now' : 'Collapse Live Now'}
+              aria-label={collapsed ? 'Expand Live Now' : 'Collapse Live Now'}
+              aria-expanded={!collapsed}
             >
-              {collapsed ? (
+              <motion.span
+                animate={{ rotate: collapsed ? -90 : 0 }}
+                transition={SPRING_SMOOTH}
+                className="inline-flex"
+              >
                 <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronUp className="h-3.5 w-3.5" />
-              )}
+              </motion.span>
             </button>
           </div>
         </div>
 
-        {!collapsed && (
-          <div className="p-4">
-            {banner && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-3 py-2 font-mono text-[11px] text-[var(--ink-muted)]">
-                <span className="flex items-center gap-2">
-                  <PixelDot active={banner.tone === 'amber'} tone={banner.tone} />
-                  <strong className="text-[var(--ink-primary)]">{banner.label}:</strong>{' '}
-                  {banner.text}
-                </span>
-                {showConnectCta && (
-                  <Button
-                    type="button"
-                    variant="primary"
-                    size="sm"
-                    onClick={() => void handleConnectSpotify()}
-                    disabled={loggingIn}
-                    className="rounded-[var(--radius-pill)] border-[#1DB954] bg-[#1DB954] text-[#08130B] hover:border-[#1ed760] hover:bg-[#1ed760]"
-                  >
-                    {loggingIn ? (
-                      <>
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        <span>Waiting for browser login...</span>
-                      </>
-                    ) : (
-                      <>
-                        <LogIn className="h-3 w-3" />
-                        <span>Connect Spotify</span>
-                      </>
-                    )}
-                  </Button>
-                )}
-              </div>
-            )}
-
-            {!banner && spinningFriends.length === 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--ink-muted)]">
-                <span>
-                  {hasFilter && totalSpinningCount > 0
-                    ? `None of the selected listeners are playing right now (${totalSpinningCount} other ${totalSpinningCount === 1 ? 'listener is' : 'listeners are'} active).`
-                    : 'No listeners are actively playing right now.'}
-                </span>
-                {recentFriends.length > 0 && onOpenFull && (
-                  <button
-                    type="button"
-                    onClick={onOpenFull}
-                    className="font-mono text-[11px] text-[var(--accent-primary)] underline underline-offset-4 transition-colors hover:text-[var(--accent-hover)] cursor-pointer"
-                  >
-                    View {recentFriends.length} recently played &rarr;
-                  </button>
-                )}
-              </div>
-            )}
-
-            {spinningFriends.length > 0 && (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {spinningFriends.map((friend) => {
-                  const elapsed =
-                    friend.duration_ms != null && friend.duration_ms > 0
-                      ? Math.min(Math.max(0, now - friend.timestamp_ms), friend.duration_ms)
-                      : null;
-                  const pct =
-                    elapsed != null && friend.duration_ms
-                      ? Math.min(100, (elapsed / friend.duration_ms) * 100)
-                      : 0;
-
-                  return (
-                    <div
-                      key={friend.user_uri}
-                      className="bside-card-interactive flex items-center gap-3 border-[var(--border-accent)] bg-[var(--bg-inset)] p-3"
-                    >
-                      <VinylSleeve
-                        coverUrl={friend.cover_url}
-                        title={friend.track_name}
-                        spinning
-                        size="sm"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <button
-                            type="button"
-                            onClick={() => onFilterByUser?.(friend.user_uri)}
-                            className="flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-[var(--accent-primary)] cursor-pointer"
-                            title={`Filter analytics by ${friend.user_name}`}
-                          >
-                            <UserAvatar
-                              name={friend.user_name}
-                              imageUrl={resolveAvatar(friend)}
-                              size="xs"
-                              isLive
-                              isSelf={friend.is_self}
-                            />
-                            <span className="truncate font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)] hover:underline">
-                              {friend.user_name}
-                            </span>
-                            {friend.is_self && (
-                              <Badge variant="default" className="px-1 py-0 text-[8px]">
-                                YOU
-                              </Badge>
-                            )}
-                          </button>
-                          <PixelEq active />
-                        </div>
-                        <a
-                          href={friend.spotify_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-1 block truncate text-xs font-semibold text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-primary)]"
-                        >
-                          {friend.track_name}
-                        </a>
-                        <div className="truncate text-[11px] text-[var(--ink-muted)]">
-                          {friend.all_artists}
-                        </div>
-                        {friend.duration_ms != null && friend.duration_ms > 0 && (
-                          <div className="mt-2">
-                            <div className="h-[3px] w-full overflow-hidden rounded-[var(--radius-pill)] bg-[var(--border-subtle)]">
-                              <div
-                                className="h-full rounded-[var(--radius-pill)] bg-[var(--accent-primary)] transition-[width] duration-1000 ease-linear"
-                                style={{ width: `${pct}%` }}
-                              />
-                            </div>
-                          </div>
-                        )}
+        <AnimatePresence initial={false}>
+          {!collapsed && (
+            <motion.div
+              key="compact-live-body"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.22, ease: EASE_OUT_EXPO }}
+              className="overflow-hidden border-t border-[var(--border-subtle)]"
+            >
+              <div className="p-3.5">
+                {banner && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-control)] bg-[var(--bg-inset)] px-3.5 py-2.5 text-xs">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      {renderBannerIcon(banner.kind)}
+                      <div className="min-w-0">
+                        <span className="font-medium text-[var(--ink-primary)]">
+                          {banner.label}
+                        </span>
+                        <span className="mx-1.5 text-[var(--ink-muted)]">&middot;</span>
+                        <span className="text-[var(--ink-secondary)]">{banner.text}</span>
                       </div>
                     </div>
-                  );
-                })}
+                    {showConnectCta && renderConnectCta('sm')}
+                  </div>
+                )}
+
+                {!banner && spinningFriends.length === 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-0.5 py-1 text-xs text-[var(--ink-muted)]">
+                    <span>
+                      {hasFilter && totalSpinningCount > 0
+                        ? `None of the selected listeners are playing right now (${totalSpinningCount} other ${totalSpinningCount === 1 ? 'listener is' : 'listeners are'} active).`
+                        : 'No listeners are actively playing right now.'}
+                    </span>
+                    {recentFriends.length > 0 && onOpenFull && (
+                      <button
+                        type="button"
+                        onClick={onOpenFull}
+                        className="tactile-press inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink-primary)]"
+                      >
+                        <span>View {recentFriends.length} recently played</span>
+                        <ArrowRight className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {spinningFriends.length > 0 && (
+                  <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+                    {spinningFriends.map((friend, idx) => {
+                      const hasDuration = friend.duration_ms != null && friend.duration_ms > 0;
+                      const elapsed = hasDuration
+                        ? Math.min(Math.max(0, now - friend.timestamp_ms), friend.duration_ms!)
+                        : null;
+                      const pct =
+                        elapsed != null && friend.duration_ms
+                          ? Math.min(100, (elapsed / friend.duration_ms) * 100)
+                          : 0;
+
+                      return (
+                        <StaggerItem key={friend.user_uri} index={idx}>
+                          <div className="group flex items-center gap-3 rounded-[9px] border border-[var(--border-subtle)] bg-[var(--bg-inset)]/75 p-2.5 transition-colors duration-150 hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)]/65">
+                            <CoverArt
+                              src={friend.cover_url}
+                              alt={friend.track_name}
+                              size="sm"
+                              hoverZoom
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => onFilterByUser?.(friend.user_uri)}
+                                  className="tactile-press flex min-w-0 cursor-pointer items-center gap-1.5 text-left"
+                                  title={`Filter analytics by ${friend.user_name}`}
+                                >
+                                  <UserAvatar
+                                    name={friend.user_name}
+                                    imageUrl={resolveAvatar(friend)}
+                                    size="xs"
+                                    isLive
+                                    isSelf={friend.is_self}
+                                  />
+                                  <span className="truncate text-[11.5px] font-medium text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink-primary)]">
+                                    {friend.user_name}
+                                    {friend.is_self ? ' · You' : ''}
+                                  </span>
+                                </button>
+                                <PixelEq active className="shrink-0" />
+                              </div>
+
+                              <a
+                                href={friend.spotify_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-0.5 block truncate text-[13px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
+                              >
+                                {friend.track_name}
+                              </a>
+                              <div className="truncate text-[11.5px] text-[var(--ink-muted)]">
+                                {friend.all_artists}
+                              </div>
+
+                              {hasDuration && (
+                                <div className="mt-2 h-[2px] w-full overflow-hidden rounded-full bg-white/[0.08]">
+                                  <div
+                                    className="h-full rounded-full bg-[var(--accent-ember)] transition-[width] duration-1000 ease-linear"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </StaggerItem>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </section>
     );
   }
 
-  // FULL LIVE NOW DECK
+  // FULL LIVE NOW VIEW
   return (
-    <div className="space-y-6 animate-fade-up">
-      {/* Header Bar */}
+    <div className="space-y-7">
+      {/* Calm Header */}
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-[var(--border-subtle)] pb-4">
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-3">
-            <h2 className="font-display text-3xl font-extrabold leading-none tracking-tight text-[var(--ink-primary)] sm:text-4xl">
-              Live Now
-            </h2>
-            <div className="inline-flex items-center gap-2 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-wider">
-              <PixelDot
-                active={spinningFriends.length > 0}
-                tone={spinningFriends.length > 0 ? 'sage' : banner ? banner.tone : 'muted'}
-              />
-              <span
-                className={
-                  spinningFriends.length > 0
-                    ? 'text-[var(--accent-primary)]'
-                    : 'text-[var(--ink-muted)]'
-                }
-              >
-                {spinningFriends.length} on air
+        <div className="space-y-1">
+          <h2 className="font-display text-[22px] font-semibold leading-tight tracking-[-0.025em] text-[var(--ink-primary)] sm:text-[24px]">
+            Live Now
+          </h2>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--ink-secondary)]">
+            <span className="inline-flex items-center gap-2">
+              <PixelEq active={spinningFriends.length > 0} />
+              <span className="tabular-nums">
+                {spinningFriends.length}{' '}
+                {spinningFriends.length === 1 ? 'listener' : 'listeners'} active
               </span>
-            </div>
+            </span>
             {hasFilter && hiddenCount > 0 && (
-              <Badge variant="info" className="gap-1">
-                <Filter className="h-2.5 w-2.5" />
-                Filtered ({visibleFriends.length}/{allFriends.length})
-              </Badge>
+              <span className="text-[var(--ink-muted)] tabular-nums">
+                &middot; Filtered ({visibleFriends.length} of {allFriends.length})
+              </span>
             )}
+            <InfoTooltip content={transport.tooltip} side="bottom">
+              <span className="cursor-default text-[var(--ink-muted)]">
+                &middot;{' '}
+                <span
+                  className={cn(
+                    isLive && transport.tone === 'amber' && 'text-[var(--warning)]',
+                  )}
+                >
+                  {isLive ? transport.label : 'Offline'}
+                </span>
+                {snapshot?.updated_at_ms && (
+                  <>
+                    {' '}
+                    &middot; Synced{' '}
+                    <span className="font-mono text-[11px] tabular-nums">
+                      {lastSyncLabel}
+                    </span>
+                  </>
+                )}
+              </span>
+            </InfoTooltip>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="text-right font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-            <div>Synced {lastSyncLabel}</div>
-            {isLive && transport.hasExplicitTransport ? (
-              <div
-                title={transport.tooltip}
-                className={cn(
-                  transport.tone === 'sage' && 'text-[var(--accent-primary)]',
-                  transport.tone === 'amber' && 'text-[var(--warning)]',
-                )}
-              >
-                {transport.label}
-              </div>
-            ) : snapshot?.transport?.trim() === 'offline' ? (
-              <div title={transport.tooltip}>{transport.label}</div>
-            ) : snapshot?.poll_interval_secs ? (
-              <div>SSE &middot; {snapshot.poll_interval_secs}s poll</div>
-            ) : null}
-          </div>
-          <Button variant="primary" size="md" onClick={pollNow} disabled={polling}>
-            <RefreshCw className={cn('h-3.5 w-3.5', polling && 'animate-spin')} />
-            {isLive && transport.isPush ? 'Sync Now' : 'Poll Now'}
-          </Button>
-        </div>
+        <Button
+          variant="secondary"
+          size="md"
+          onClick={pollNow}
+          disabled={polling}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', polling && 'animate-spin')} />
+          <span>{isLive && transport.isPush ? 'Sync' : 'Refresh'}</span>
+        </Button>
       </div>
 
-      {/* Status Banner when not connected/live */}
+      {/* Unauthenticated / Error Banner */}
       {banner && (
-        <div className="bside-card flex flex-wrap items-center justify-between gap-3 border-[var(--border-strong)] px-4 py-3">
-          <div className="flex items-center gap-3 font-mono text-xs">
-            <PixelDot active={banner.tone === 'amber'} tone={banner.tone} />
-            <div>
-              <span className="font-semibold uppercase tracking-wider text-[var(--ink-primary)]">
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, ease: EASE_OUT_EXPO }}
+          className="flex flex-wrap items-center justify-between gap-4 rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-3.5"
+        >
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="mt-0.5">{renderBannerIcon(banner.kind)}</div>
+            <div className="min-w-0 space-y-0.5">
+              <div className="text-[13px] font-medium text-[var(--ink-primary)]">
                 {banner.label}
-              </span>
-              <span className="mx-2 text-[var(--border-strong)]">/</span>
-              <span className="text-[var(--ink-muted)]">{banner.text}</span>
+              </div>
+              <p className="text-xs text-[var(--ink-secondary)]">{banner.text}</p>
             </div>
           </div>
           {showConnectCta ? (
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              onClick={() => void handleConnectSpotify()}
-              disabled={loggingIn}
-              className="rounded-[var(--radius-pill)] border-[#1DB954] bg-[#1DB954] text-[#08130B] hover:border-[#1ed760] hover:bg-[#1ed760]"
-            >
-              {loggingIn ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  <span>Waiting for browser login...</span>
-                </>
-              ) : (
-                <>
-                  <LogIn className="h-3.5 w-3.5" />
-                  <span>Connect Spotify</span>
-                </>
-              )}
-            </Button>
+            renderConnectCta('md')
           ) : (
-            <Button variant="outline" size="sm" onClick={pollNow} disabled={polling}>
+            <Button variant="secondary" size="sm" onClick={pollNow} disabled={polling}>
               Retry
             </Button>
           )}
-        </div>
+        </motion.div>
       )}
 
-      {/* On Air Grid */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-widest text-[var(--ink-primary)]">
-            <Radio className="h-3.5 w-3.5 text-[var(--accent-primary)]" />
-            <span>On Air</span>
-            <span className="text-[var(--ink-muted)]">({spinningFriends.length})</span>
+      {/* Active Now Spotlight Grid */}
+      <section className="space-y-3.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+              Active now
+            </h3>
+            <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+              {spinningFriends.length}
+            </span>
           </div>
         </div>
 
         {spinningFriends.length === 0 ? (
-          <div className="bside-card border-dashed px-6 py-10 text-center">
+          <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)]/45 px-6 py-12 text-center">
             <div className="mx-auto mb-3 flex justify-center">
               <PixelEq active={false} />
             </div>
-            <p className="font-display text-xl font-bold tracking-tight text-[var(--ink-primary)]">
+            <p className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
               {hasFilter && totalSpinningCount > 0
-                ? 'No selected listeners on air'
-                : 'All turntables idle'}
+                ? 'No selected listeners active'
+                : 'No active playback right now'}
             </p>
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+            <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-[var(--ink-muted)]">
               {hasFilter && totalSpinningCount > 0
                 ? `${totalSpinningCount} other ${totalSpinningCount === 1 ? 'listener is' : 'listeners are'} playing outside the active filter.`
-                : 'Active playback will appear here automatically over the live stream.'}
+                : 'Active listening sessions will appear here automatically as friends start playing.'}
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {spinningFriends.map((friend) => {
+            {spinningFriends.map((friend, idx) => {
               const hasDuration = friend.duration_ms != null && friend.duration_ms > 0;
               const elapsed = hasDuration
                 ? Math.min(Math.max(0, now - friend.timestamp_ms), friend.duration_ms!)
@@ -687,179 +692,206 @@ export function LiveNowSection({
                   ? Math.min(100, (elapsed / friend.duration_ms) * 100)
                   : 0;
 
+              const releaseYear = friend.release_date?.slice(0, 4);
+
               return (
-                <article
+                <motion.article
                   key={friend.user_uri}
-                  className="bside-card-interactive group relative flex flex-col justify-between border-[var(--border-accent)] p-4"
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{
+                    duration: 0.24,
+                    delay: Math.min(idx * 0.03, 0.18),
+                    ease: EASE_OUT_EXPO,
+                  }}
+                  whileHover={{ y: -2, transition: { duration: 0.16, ease: EASE_OUT_EXPO } }}
+                  className="group relative overflow-hidden rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-4 transition-colors duration-150 hover:border-[var(--border-strong)]"
                 >
-                  {/* Top metadata row: Avatar + Name + Live EQ */}
-                  <div className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] pb-2.5">
-                    <button
-                      type="button"
-                      onClick={() => onFilterByUser?.(friend.user_uri)}
-                      className="flex min-w-0 items-center gap-2 text-left transition-colors hover:text-[var(--accent-primary)] cursor-pointer"
-                      title={`Filter analytics by ${friend.user_name}`}
-                    >
-                      <UserAvatar
-                        name={friend.user_name}
-                        imageUrl={resolveAvatar(friend)}
-                        size="sm"
-                        isLive
-                        isSelf={friend.is_self}
-                      />
-                      <span className="truncate text-xs font-semibold text-[var(--ink-primary)] group-hover:text-[var(--accent-primary)]">
-                        {friend.user_name}
-                      </span>
-                      {friend.is_self && (
-                        <Badge variant="default" className="px-1.5 py-0 text-[9px]">
-                          YOU
-                        </Badge>
-                      )}
-                    </button>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <PixelEq active />
-                      <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[var(--accent-primary)]">
-                        Live
-                      </span>
+                  <AmbientArtGlow imageUrl={friend.cover_url} intensity="subtle" />
+
+                  <div className="relative z-10 flex h-full flex-col justify-between gap-4">
+                    {/* Listener Bar */}
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onFilterByUser?.(friend.user_uri)}
+                        className="tactile-press group/user flex min-w-0 cursor-pointer items-center gap-2 text-left"
+                        title={`Filter analytics by ${friend.user_name}`}
+                      >
+                        <UserAvatar
+                          name={friend.user_name}
+                          imageUrl={resolveAvatar(friend)}
+                          size="sm"
+                          isLive
+                          isSelf={friend.is_self}
+                        />
+                        <span className="truncate text-[13px] font-medium text-[var(--ink-primary)] transition-colors group-hover/user:text-[var(--accent-ember)]">
+                          {friend.user_name}
+                        </span>
+                        {friend.is_self && (
+                          <span className="shrink-0 text-xs text-[var(--ink-muted)]">
+                            &middot; You
+                          </span>
+                        )}
+                      </button>
+
+                      <div className="flex shrink-0 items-center gap-2">
+                        <PixelEq active />
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Center body: Spinning Vinyl + Track Metadata */}
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                    <VinylSleeve
-                      coverUrl={friend.cover_url}
-                      title={friend.track_name}
-                      spinning
-                      size="lg"
-                    />
+                    {/* Artwork + Track Metadata */}
+                    <div className="flex items-center gap-4">
+                      <CoverArt
+                        src={friend.cover_url}
+                        alt={friend.track_name}
+                        size="lg"
+                        hoverZoom
+                        className="shadow-[var(--shadow-art)]"
+                      />
 
-                    <div className="min-w-0 flex-1 space-y-2">
-                      <div>
+                      <div className="min-w-0 flex-1 space-y-1">
                         <a
                           href={friend.spotify_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="group/link inline-flex max-w-full items-center gap-1.5 font-display text-2xl font-bold leading-tight tracking-tight text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-primary)]"
+                          className="group/link inline-flex max-w-full items-center gap-1.5 text-[15px] font-semibold leading-snug tracking-[-0.015em] text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
                         >
                           <span className="truncate">{friend.track_name}</span>
-                          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-50 group-hover/link:opacity-100" />
+                          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity duration-150 group-hover:opacity-55 group-hover/link:opacity-100" />
                         </a>
+
                         <div className="truncate text-xs text-[var(--ink-secondary)]">
                           {friend.all_artists}
+                          {friend.album_name && (
+                            <span className="text-[var(--ink-muted)]">
+                              {' '}
+                              &middot; {friend.album_name}
+                              {releaseYear ? ` (${releaseYear})` : ''}
+                            </span>
+                          )}
                         </div>
-                        {friend.album_name && (
-                          <div className="mt-0.5 truncate font-mono text-[10px] text-[var(--ink-muted)]">
-                            {friend.album_name}
-                            {friend.release_date ? ` · ${friend.release_date.slice(0, 4)}` : ''}
-                          </div>
-                        )}
-                      </div>
 
-                      {/* Badges: Context (with cover & click), Explicit, Popularity */}
-                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                        {renderContextChip(friend)}
-                        {friend.explicit && <Badge variant="outline">E</Badge>}
-                        {friend.popularity != null && (
-                          <InfoTooltip
-                            content="Spotify popularity score (0–100) based on recent stream volume"
-                            side="top"
-                          >
-                            <Badge variant="outline">POP {friend.popularity}</Badge>
-                          </InfoTooltip>
-                        )}
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1">
+                          {renderContextButton(friend)}
+                          {friend.explicit && (
+                            <InfoTooltip content="Explicit content" side="top">
+                              <span className="cursor-default rounded bg-white/[0.06] px-1 py-px text-[10px] font-medium leading-tight text-[var(--ink-muted)]">
+                                E
+                              </span>
+                            </InfoTooltip>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Sleek 2px Warm Ember Progress Bar */}
+                    <div className="space-y-1.5 pt-0.5">
+                      <div className="h-[2px] w-full overflow-hidden rounded-full bg-white/[0.08]">
+                        <div
+                          className="h-full rounded-full bg-[var(--accent-ember)] transition-[width] duration-1000 ease-linear"
+                          style={{ width: hasDuration ? `${pct}%` : '100%' }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between font-mono text-[11px] tabular-nums text-[var(--ink-muted)]">
+                        <span>
+                          {elapsed != null ? formatDuration(elapsed) : 'Live'}
+                        </span>
+                        <span>
+                          {hasDuration ? formatDuration(friend.duration_ms) : '--:--'}
+                        </span>
                       </div>
                     </div>
                   </div>
-
-                  {/* Bottom Live Playback Progress Bar */}
-                  <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
-                    <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-                      <span>Playback</span>
-                      <span className="tabular-nums text-[var(--ink-primary)]">
-                        {elapsed != null && friend.duration_ms
-                          ? `${formatDuration(elapsed)} / ${formatDuration(friend.duration_ms)}`
-                          : 'Live stream'}
-                      </span>
-                    </div>
-                    <div className="h-[3px] w-full overflow-hidden rounded-[var(--radius-pill)] bg-[var(--bg-inset)]">
-                      <div
-                        className="h-full rounded-[var(--radius-pill)] bg-[var(--accent-primary)] transition-[width] duration-1000 ease-linear"
-                        style={{ width: hasDuration ? `${pct}%` : '100%' }}
-                      />
-                    </div>
-                  </div>
-                </article>
+                </motion.article>
               );
             })}
           </div>
         )}
       </section>
 
-      {/* Recently Played Row */}
+      {/* Recently Played — Borderless Hairline List */}
       {recentFriends.length > 0 && (
-        <section className="space-y-3 pt-2">
-          <div className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-widest text-[var(--ink-muted)]">
-            <span>Recently Played</span>
-            <span>({recentFriends.length})</span>
+        <section className="space-y-2.5 pt-1">
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-[15px] font-semibold tracking-[-0.015em] text-[var(--ink-primary)]">
+              Recently played
+            </h3>
+            <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+              {recentFriends.length}
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {recentFriends.map((friend) => (
-              <article
-                key={friend.user_uri}
-                className="bside-card-interactive flex items-center gap-3.5 p-3"
-              >
-                <VinylSleeve
-                  coverUrl={friend.cover_url}
-                  title={friend.track_name}
-                  spinning={false}
-                  size="sm"
-                />
+          <div className="divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
+            {recentFriends.map((friend, idx) => (
+              <StaggerItem key={friend.user_uri} index={idx}>
+                <div className="group flex items-center gap-3.5 py-2.5 transition-colors duration-150 hover:bg-[var(--bg-hover)] sm:px-2 sm:-mx-2 sm:rounded-[8px]">
+                  <CoverArt
+                    src={friend.cover_url}
+                    alt={friend.track_name}
+                    size="sm"
+                    hoverZoom
+                  />
 
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onFilterByUser?.(friend.user_uri)}
-                      className="flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-[var(--accent-primary)] cursor-pointer"
-                      title={`Filter analytics by ${friend.user_name}`}
+                  <div className="min-w-0 flex-1">
+                    <a
+                      href={friend.spotify_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block truncate text-[13px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
                     >
-                      <UserAvatar
-                        name={friend.user_name}
-                        imageUrl={resolveAvatar(friend)}
-                        size="xs"
-                        isSelf={friend.is_self}
-                      />
-                      <span className="truncate text-xs font-semibold text-[var(--ink-primary)] hover:text-[var(--accent-primary)]">
-                        {friend.user_name}
-                      </span>
-                      {friend.is_self && (
-                        <Badge variant="default" className="px-1 py-0 text-[8px]">
-                          YOU
-                        </Badge>
-                      )}
-                    </button>
-                    <span className="shrink-0 font-mono text-[10px] text-[var(--ink-muted)]">
+                      {friend.track_name}
+                    </a>
+                    <div className="truncate text-xs text-[var(--ink-secondary)]">
+                      {friend.all_artists}
+                    </div>
+                  </div>
+
+                  {/* Listener */}
+                  <button
+                    type="button"
+                    onClick={() => onFilterByUser?.(friend.user_uri)}
+                    className="tactile-press hidden shrink-0 cursor-pointer items-center gap-2 text-left text-xs text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink-primary)] sm:inline-flex"
+                    title={`Filter analytics by ${friend.user_name}`}
+                  >
+                    <UserAvatar
+                      name={friend.user_name}
+                      imageUrl={resolveAvatar(friend)}
+                      size="xs"
+                      isSelf={friend.is_self}
+                    />
+                    <span className="max-w-[120px] truncate">
+                      {friend.user_name}
+                      {friend.is_self ? ' · You' : ''}
+                    </span>
+                  </button>
+
+                  {/* Context */}
+                  {(friend.context_name || friend.context_uri) && (
+                    <div className="hidden shrink-0 md:block">
+                      {renderContextButton(friend, true)}
+                    </div>
+                  )}
+
+                  {/* Relative time + hover link */}
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="font-mono text-[11px] tabular-nums text-[var(--ink-muted)]">
                       {formatRelativeTime(friend.timestamp_ms)}
                     </span>
+                    <a
+                      href={friend.spotify_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in Spotify"
+                      aria-label={`Open ${friend.track_name} in Spotify`}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-[6px] text-[var(--ink-muted)] opacity-0 transition-all duration-150 hover:bg-[var(--bg-active)] hover:text-[var(--ink-primary)] group-hover:opacity-100 focus-visible:opacity-100"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
                   </div>
-
-                  <a
-                    href={friend.spotify_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 block truncate text-xs font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-primary)]"
-                  >
-                    {friend.track_name}
-                  </a>
-                  <div className="truncate text-[11px] text-[var(--ink-muted)]">
-                    {friend.all_artists}
-                  </div>
-                  {(friend.context_name || friend.context_uri) && (
-                    <div className="mt-1.5">{renderContextChip(friend, true)}</div>
-                  )}
                 </div>
-              </article>
+              </StaggerItem>
             ))}
           </div>
         </section>
