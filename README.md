@@ -39,6 +39,20 @@ curl -fsSL https://raw.githubusercontent.com/002love/bside/main/scripts/install.
 irm https://raw.githubusercontent.com/002love/bside/main/scripts/install.ps1 | iex
 ```
 
+### Desktop app (Tauri)
+
+Prebuilt desktop installers (`.dmg`, `.msi`, `-setup.exe`, `.deb`, `.rpm`, `.AppImage`, and `-linux-desktop.tar.gz`) are attached to each [GitHub Release](https://github.com/002love/bside/releases).
+
+- **macOS**: Drag `bside.app` into `/Applications`. Because releases are ad-hoc signed rather than Apple-notarized, macOS Gatekeeper marks browser-downloaded `.dmg` files as quarantined and shows *"bside is damaged and can't be opened"*. Clear the quarantine attribute once after copying to `/Applications`:
+  ```bash
+  xattr -cr /Applications/bside.app
+  ```
+- **Arch Linux**: Use the standalone `bside-*-x86_64-linux-desktop.tar.gz` archive (avoids Ubuntu AppImage FUSE2 / Mesa library conflicts) with `webkit2gtk-4.1` (and optionally `libayatana-appindicator` for the system tray icon):
+  ```bash
+  sudo pacman -S webkit2gtk-4.1 libayatana-appindicator
+  ```
+  If using the `.AppImage` on Arch, install `fuse2` or launch with `--appimage-extract-and-run`.
+
 ### Build from source
 
 ```bash
