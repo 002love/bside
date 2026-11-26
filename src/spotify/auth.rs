@@ -30,6 +30,7 @@ pub async fn login_oauth(
             "user-read-currently-playing",
             "user-read-playback-state",
             "user-read-recently-played",
+            "user-modify-playback-state",
         ],
     )
     .with_custom_message(

@@ -863,6 +863,17 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
     }
 }
 
+async fn wait_for_extra_targets_change(
+    extra_targets_rx: &mut watch::Receiver<BTreeSet<String>>,
+    closed: bool,
+) -> Result<(), watch::error::RecvError> {
+    if closed {
+        std::future::pending().await
+    } else {
+        extra_targets_rx.changed().await
+    }
+}
+
 async fn sleep_until_opt(deadline: Option<TokioInstant>) {
     match deadline {
         Some(at) => tokio::time::sleep_until(at).await,
@@ -874,10 +885,52 @@ fn is_missing_credentials_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("No cached Spotify credentials")
 }
 
+fn normalize_watch_username(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let stripped_url = trimmed
+        .strip_prefix("https://open.spotify.com/user/")
+        .or_else(|| trimmed.strip_prefix("http://open.spotify.com/user/"));
+    if let Some(rest) = stripped_url {
+        let uid = rest.split(['/', '?', '#']).next().unwrap_or_default().trim();
+        return (!uid.is_empty()).then(|| uid.to_string());
+    }
+
+    let uid = user_id_from_uri(trimmed);
+    let uid = uid.trim();
+    if uid.is_empty() {
+        None
+    } else {
+        Some(uid.to_string())
+    }
+}
+
+fn normalize_extra_targets(targets: &BTreeSet<String>) -> BTreeSet<String> {
+    targets
+        .iter()
+        .filter_map(|raw| normalize_watch_username(raw))
+        .collect()
+}
+
+pub(crate) fn merged_watch_users(
+    known_friends: &BTreeSet<String>,
+    extra_targets: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut merged = BTreeSet::new();
+    for raw in known_friends.iter().chain(extra_targets.iter()) {
+        if let Some(uid) = normalize_watch_username(raw) {
+            merged.insert(uid);
+        }
+    }
+    merged
+}
+
 fn record_known_friends(known_friends: &mut BTreeSet<String>, friends: &[FriendActivity]) {
     for friend in friends {
-        let uid = user_id_from_uri(&friend.user.uri);
-        if !uid.is_empty() {
+        if let Some(uid) = normalize_watch_username(&friend.user.uri) {
             known_friends.insert(uid);
         }
     }
@@ -1238,20 +1291,20 @@ fn record_activity_signatures(
 async fn sync_dealer_subscriptions(
     session: &Session,
     dealer: &mut DealerState,
-    known_friends: &BTreeSet<String>,
+    watch_users: &BTreeSet<String>,
     debug_push: bool,
     shutdown_rx: &mut watch::Receiver<bool>,
-) {
-    let has_new_friends = known_friends
+) -> Option<ListeningActivitySubscribeResponse> {
+    let has_new_users = watch_users
         .iter()
         .any(|u| !dealer.subscribed_users.contains(u));
-    if !has_new_friends || *shutdown_rx.borrow() {
-        return;
+    if !has_new_users || *shutdown_rx.borrow() {
+        return None;
     }
 
-    let usernames: Vec<String> = known_friends.iter().cloned().collect();
+    let usernames: Vec<String> = watch_users.iter().cloned().collect();
     let sub_res = tokio::select! {
-        _ = wait_for_shutdown(shutdown_rx) => return,
+        _ = wait_for_shutdown(shutdown_rx) => return None,
         res = timeout(
             LISTENING_ACTIVITY_SUB_TIMEOUT,
             subscribe_listening_activity(session, &dealer.connection_id, &usernames, debug_push),
@@ -1271,6 +1324,33 @@ async fn sync_dealer_subscriptions(
                     ),
             )
         };
+        return Some(resp);
+    }
+
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn emit_friend_updates_from_entries(
+    session: &Session,
+    entries: Vec<LiveEntry>,
+    transport: TransportMode,
+    name_cache: &mut NameCache,
+    activity_signatures: &mut HashMap<String, (String, i64)>,
+    event_tx: &mpsc::UnboundedSender<ActivityEvent>,
+) {
+    if entries.is_empty() {
+        return;
+    }
+
+    if let Ok(activities) = enrich_live_entries(session, entries, name_cache).await {
+        let _ = record_activity_signatures(activity_signatures, &activities, None);
+        for activity in activities {
+            let _ = event_tx.send(ActivityEvent::FriendUpdated {
+                activity,
+                transport,
+            });
+        }
     }
 }
 
@@ -1280,6 +1360,7 @@ async fn perform_full_sync(
     transport: &mut ActiveTransport,
     name_cache: &mut NameCache,
     known_friends: &mut BTreeSet<String>,
+    extra_targets: &BTreeSet<String>,
     activity_signatures: &mut HashMap<String, (String, i64)>,
     event_tx: &mpsc::UnboundedSender<ActivityEvent>,
     consecutive_errors: &mut u32,
@@ -1300,19 +1381,31 @@ async fn perform_full_sync(
                 friends,
                 transport: mode,
             });
+            let watch_users = merged_watch_users(known_friends, extra_targets);
             match transport {
                 ActiveTransport::Dealer(dealer) => {
-                    sync_dealer_subscriptions(
+                    if let Some(resp) = sync_dealer_subscriptions(
                         session,
                         dealer,
-                        known_friends,
+                        &watch_users,
                         debug_push,
                         shutdown_rx,
                     )
-                    .await;
+                    .await
+                    {
+                        emit_friend_updates_from_entries(
+                            session,
+                            resp.entries,
+                            TransportMode::DealerPush,
+                            name_cache,
+                            activity_signatures,
+                            event_tx,
+                        )
+                        .await;
+                    }
                 }
                 ActiveTransport::Mercury(mercury) => {
-                    subscribe_new_mercury_friends(session, mercury, known_friends, shutdown_rx)
+                    subscribe_new_mercury_friends(session, mercury, &watch_users, shutdown_rx)
                         .await;
                 }
                 ActiveTransport::HttpPolling => {}
@@ -1463,6 +1556,7 @@ async fn establish_transport(
     config: &StreamConfig,
     name_cache: &mut NameCache,
     known_friends: &mut BTreeSet<String>,
+    extra_targets: &BTreeSet<String>,
     activity_signatures: &mut HashMap<String, (String, i64)>,
     event_tx: &mpsc::UnboundedSender<ActivityEvent>,
     last_mode: &mut Option<TransportMode>,
@@ -1501,10 +1595,11 @@ async fn establish_transport(
             return ActiveTransport::HttpPolling;
         }
 
+        let watch_users = merged_watch_users(known_friends, extra_targets);
         match try_start_dealer(
             session,
             dealer_consumed,
-            known_friends,
+            &watch_users,
             config.debug_push,
             shutdown_rx,
         )
@@ -1550,6 +1645,7 @@ async fn establish_transport(
                             &mut transport,
                             name_cache,
                             known_friends,
+                            extra_targets,
                             activity_signatures,
                             event_tx,
                             consecutive_errors,
@@ -1608,7 +1704,8 @@ async fn establish_transport(
             return ActiveTransport::HttpPolling;
         }
 
-        match try_start_mercury(session, known_friends, shutdown_rx).await {
+        let watch_users = merged_watch_users(known_friends, extra_targets);
+        match try_start_mercury(session, &watch_users, shutdown_rx).await {
             Ok(mercury_state) => {
                 emit_transport_changed(
                     event_tx,
@@ -1623,6 +1720,7 @@ async fn establish_transport(
                         &mut transport,
                         name_cache,
                         known_friends,
+                        extra_targets,
                         activity_signatures,
                         event_tx,
                         consecutive_errors,
@@ -1664,6 +1762,7 @@ async fn establish_transport(
             &mut transport,
             name_cache,
             known_friends,
+            extra_targets,
             activity_signatures,
             event_tx,
             consecutive_errors,
@@ -1749,6 +1848,7 @@ async fn run_activity_stream(
     config: StreamConfig,
     refresh_notify: Arc<Notify>,
     mut shutdown_rx: watch::Receiver<bool>,
+    mut extra_targets_rx: watch::Receiver<BTreeSet<String>>,
     event_tx: mpsc::UnboundedSender<ActivityEvent>,
 ) {
     let poll_interval_secs = config.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
@@ -1773,6 +1873,9 @@ async fn run_activity_stream(
     let mut dealer_consumed = false;
     let mut name_cache = NameCache::default();
     let mut known_friends: BTreeSet<String> = BTreeSet::new();
+    let mut extra_targets: BTreeSet<String> =
+        normalize_extra_targets(&extra_targets_rx.borrow_and_update());
+    let mut extra_targets_closed = false;
     let mut activity_signatures: HashMap<String, (String, i64)> = HashMap::new();
     let mut last_mode: Option<TransportMode> = None;
     let mut dealer_push_seen_since_resync = false;
@@ -1784,6 +1887,7 @@ async fn run_activity_stream(
         &config,
         &mut name_cache,
         &mut known_friends,
+        &extra_targets,
         &mut activity_signatures,
         &event_tx,
         &mut last_mode,
@@ -1835,6 +1939,7 @@ async fn run_activity_stream(
                 &config,
                 &mut name_cache,
                 &mut known_friends,
+                &extra_targets,
                 &mut activity_signatures,
                 &event_tx,
                 &mut last_mode,
@@ -1858,6 +1963,72 @@ async fn run_activity_stream(
             _ = wait_for_shutdown(&mut shutdown_rx) => {
                 break;
             }
+            changed_res = wait_for_extra_targets_change(&mut extra_targets_rx, extra_targets_closed) => {
+                match changed_res {
+                    Ok(()) => {
+                        extra_targets = normalize_extra_targets(&extra_targets_rx.borrow_and_update());
+                        let watch_users = merged_watch_users(&known_friends, &extra_targets);
+                        match &mut transport {
+                            ActiveTransport::Dealer(dealer) => {
+                                if let Some(resp) = sync_dealer_subscriptions(
+                                    &session,
+                                    dealer,
+                                    &watch_users,
+                                    config.debug_push,
+                                    &mut shutdown_rx,
+                                )
+                                .await
+                                {
+                                    emit_friend_updates_from_entries(
+                                        &session,
+                                        resp.entries,
+                                        TransportMode::DealerPush,
+                                        &mut name_cache,
+                                        &mut activity_signatures,
+                                        &event_tx,
+                                    )
+                                    .await;
+                                }
+                            }
+                            ActiveTransport::Mercury(mercury) => {
+                                subscribe_new_mercury_friends(
+                                    &session,
+                                    mercury,
+                                    &watch_users,
+                                    &mut shutdown_rx,
+                                )
+                                .await;
+                            }
+                            ActiveTransport::HttpPolling => {
+                                if !extra_targets.is_empty() {
+                                    let _ = perform_full_sync(
+                                        &session,
+                                        &mut transport,
+                                        &mut name_cache,
+                                        &mut known_friends,
+                                        &extra_targets,
+                                        &mut activity_signatures,
+                                        &event_tx,
+                                        &mut consecutive_errors,
+                                        config.debug_push,
+                                        &mut shutdown_rx,
+                                    )
+                                    .await;
+                                    next_tick = next_tick_instant(
+                                        &transport,
+                                        poll_interval_secs,
+                                        resync_interval_secs,
+                                        consecutive_errors,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        extra_targets_closed = true;
+                    }
+                }
+            }
             _ = refresh_notify.notified() => {
                 invalidate_deadline = None;
                 let _ = perform_full_sync(
@@ -1865,6 +2036,7 @@ async fn run_activity_stream(
                     &mut transport,
                     &mut name_cache,
                     &mut known_friends,
+                    &extra_targets,
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
@@ -1886,6 +2058,7 @@ async fn run_activity_stream(
                     &mut transport,
                     &mut name_cache,
                     &mut known_friends,
+                    &extra_targets,
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
@@ -1902,7 +2075,8 @@ async fn run_activity_stream(
             }
             _ = sleep_until_opt(renew_deadline) => {
                 if let ActiveTransport::Dealer(dealer) = &mut transport {
-                    let usernames: Vec<String> = known_friends.iter().cloned().collect();
+                    let watch_users = merged_watch_users(&known_friends, &extra_targets);
+                    let usernames: Vec<String> = watch_users.iter().cloned().collect();
                     if usernames.is_empty() {
                         dealer.renew_deadline = None;
                     } else {
@@ -1937,7 +2111,7 @@ async fn run_activity_stream(
                                 transport = downgrade_after_dealer(
                                     &session,
                                     config.transport,
-                                    &known_friends,
+                                    &watch_users,
                                     &event_tx,
                                     &mut last_mode,
                                     reason,
@@ -1958,7 +2132,7 @@ async fn run_activity_stream(
                                 transport = downgrade_after_dealer(
                                     &session,
                                     config.transport,
-                                    &known_friends,
+                                    &watch_users,
                                     &event_tx,
                                     &mut last_mode,
                                     reason,
@@ -1983,6 +2157,7 @@ async fn run_activity_stream(
                     &mut transport,
                     &mut name_cache,
                     &mut known_friends,
+                    &extra_targets,
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
@@ -2000,10 +2175,11 @@ async fn run_activity_stream(
                         if dealer_stale_resyncs >= DEALER_STALE_RESYNC_THRESHOLD {
                             dealer_stale_resyncs = 0;
                             teardown_transport(&session, &mut transport, config.debug_push).await;
+                            let watch_users = merged_watch_users(&known_friends, &extra_targets);
                             transport = downgrade_after_dealer(
                                 &session,
                                 config.transport,
-                                &known_friends,
+                                &watch_users,
                                 &event_tx,
                                 &mut last_mode,
                                 format!(
@@ -2045,6 +2221,7 @@ async fn run_activity_stream(
                                         &config,
                                         &mut name_cache,
                                         &mut known_friends,
+                                        &extra_targets,
                                         &mut activity_signatures,
                                         &event_tx,
                                         &mut last_mode,
@@ -2071,6 +2248,7 @@ async fn run_activity_stream(
                                 &config,
                                 &mut name_cache,
                                 &mut known_friends,
+                                &extra_targets,
                                 &mut activity_signatures,
                                 &event_tx,
                                 &mut last_mode,
@@ -2081,7 +2259,8 @@ async fn run_activity_stream(
                         }
                     }
                     TransportPreference::Mercury => {
-                        if let Ok(mercury_state) = try_start_mercury(&session, &known_friends, &mut shutdown_rx).await {
+                        let watch_users = merged_watch_users(&known_friends, &extra_targets);
+                        if let Ok(mercury_state) = try_start_mercury(&session, &watch_users, &mut shutdown_rx).await {
                             transport = ActiveTransport::Mercury(mercury_state);
                             emit_transport_changed(
                                 &event_tx,
@@ -2129,7 +2308,8 @@ async fn run_activity_stream(
                                 .await;
                             }
 
-                            let usernames: Vec<String> = known_friends.iter().cloned().collect();
+                            let watch_users = merged_watch_users(&known_friends, &extra_targets);
+                            let usernames: Vec<String> = watch_users.iter().cloned().collect();
                             let reg_res = tokio::select! {
                                 _ = wait_for_shutdown(&mut shutdown_rx) => break,
                                 res = timeout(
@@ -2176,6 +2356,7 @@ async fn run_activity_stream(
                                             &mut transport,
                                             &mut name_cache,
                                             &mut known_friends,
+                                            &extra_targets,
                                             &mut activity_signatures,
                                             &event_tx,
                                             &mut consecutive_errors,
@@ -2191,7 +2372,7 @@ async fn run_activity_stream(
                                     transport = downgrade_after_dealer(
                                         &session,
                                         config.transport,
-                                        &known_friends,
+                                        &watch_users,
                                         &event_tx,
                                         &mut last_mode,
                                         reason,
@@ -2212,7 +2393,7 @@ async fn run_activity_stream(
                                     transport = downgrade_after_dealer(
                                         &session,
                                         config.transport,
-                                        &known_friends,
+                                        &watch_users,
                                         &event_tx,
                                         &mut last_mode,
                                         reason,
@@ -2250,10 +2431,11 @@ async fn run_activity_stream(
                     }
                     TransportTickEvent::Dealer(DealerEvent::Closed) => {
                         teardown_transport(&session, &mut transport, config.debug_push).await;
+                        let watch_users = merged_watch_users(&known_friends, &extra_targets);
                         transport = downgrade_after_dealer(
                             &session,
                             config.transport,
-                            &known_friends,
+                            &watch_users,
                             &event_tx,
                             &mut last_mode,
                             "Dealer WebSocket stream closed".to_string(),
@@ -2337,14 +2519,14 @@ async fn run_activity_stream(
 async fn downgrade_after_dealer(
     session: &Session,
     preference: TransportPreference,
-    known_friends: &BTreeSet<String>,
+    watch_users: &BTreeSet<String>,
     event_tx: &mpsc::UnboundedSender<ActivityEvent>,
     last_mode: &mut Option<TransportMode>,
     dealer_reason: String,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> ActiveTransport {
     if preference == TransportPreference::Auto && !*shutdown_rx.borrow() {
-        match try_start_mercury(session, known_friends, shutdown_rx).await {
+        match try_start_mercury(session, watch_users, shutdown_rx).await {
             Ok(mercury_state) => {
                 emit_transport_changed(
                     event_tx,
@@ -2375,11 +2557,12 @@ async fn downgrade_after_dealer(
     ActiveTransport::HttpPolling
 }
 
-pub fn spawn_activity_stream(
+pub fn spawn_activity_stream_with_targets(
     cache_dir: PathBuf,
     config: StreamConfig,
     refresh_notify: Arc<Notify>,
     shutdown_rx: watch::Receiver<bool>,
+    extra_targets_rx: watch::Receiver<BTreeSet<String>>,
 ) -> (
     mpsc::UnboundedReceiver<ActivityEvent>,
     tokio::task::JoinHandle<()>,
@@ -2390,7 +2573,91 @@ pub fn spawn_activity_stream(
         config,
         refresh_notify,
         shutdown_rx,
+        extra_targets_rx,
         event_tx,
     ));
     (event_rx, handle)
+}
+
+pub fn spawn_activity_stream(
+    cache_dir: PathBuf,
+    config: StreamConfig,
+    refresh_notify: Arc<Notify>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> (
+    mpsc::UnboundedReceiver<ActivityEvent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (_extra_tx, extra_rx) = watch::channel(BTreeSet::new());
+    spawn_activity_stream_with_targets(cache_dir, config, refresh_notify, shutdown_rx, extra_rx)
+}
+
+#[cfg(test)]
+mod listen_along_target_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_watch_username_handles_uri_url_bare_and_empty() {
+        assert_eq!(
+            normalize_watch_username("spotify:user:alice").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            normalize_watch_username("  spotify:user:bob_42  ").as_deref(),
+            Some("bob_42")
+        );
+        assert_eq!(normalize_watch_username("carol").as_deref(), Some("carol"));
+        assert_eq!(
+            normalize_watch_username("https://open.spotify.com/user/dave?si=xyz").as_deref(),
+            Some("dave")
+        );
+        assert_eq!(
+            normalize_watch_username("http://open.spotify.com/user/eve/").as_deref(),
+            Some("eve")
+        );
+        assert_eq!(normalize_watch_username(""), None);
+        assert_eq!(normalize_watch_username("   "), None);
+        assert_eq!(normalize_watch_username("spotify:user:"), None);
+    }
+
+    #[test]
+    fn merged_watch_users_combines_and_deduplicates_normalized_usernames() {
+        let friends = BTreeSet::from([
+            "alice".to_string(),
+            "spotify:user:bob".to_string(),
+            "   ".to_string(),
+        ]);
+        let extras = BTreeSet::from([
+            "spotify:user:bob".to_string(),
+            "charlie".to_string(),
+            "https://open.spotify.com/user/dave?si=123".to_string(),
+            "spotify:user:".to_string(),
+        ]);
+
+        let merged = merged_watch_users(&friends, &extras);
+        assert_eq!(
+            merged,
+            BTreeSet::from([
+                "alice".to_string(),
+                "bob".to_string(),
+                "charlie".to_string(),
+                "dave".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn normalize_extra_targets_drops_invalid_and_normalizes() {
+        let raw = BTreeSet::from([
+            "spotify:user:target1".to_string(),
+            "target2".to_string(),
+            "".to_string(),
+            "  spotify:user:target1  ".to_string(),
+        ]);
+
+        assert_eq!(
+            normalize_extra_targets(&raw),
+            BTreeSet::from(["target1".to_string(), "target2".to_string()])
+        );
+    }
 }
