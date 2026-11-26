@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use http::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HeaderValue};
+use http::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue};
 use http::{Method, Request};
 use librespot_core::{
     dealer::{
@@ -38,11 +38,16 @@ const DEALER_CONNECTIONS_URI: &str = "hm://pusher/v1/connections/";
 const DEALER_PRESENCE2_URI: &str = "hm://presence2/user/";
 const DEALER_PRESENCE_VIEW_URI: &str = "hm://presence-view/";
 const DEALER_LISTENING_ACTIVITY_URI: &str = "hm://listening-activity/";
-const INIT_FRIEND_FEED_PATH_PREFIX: &str = "/presence-view/v2/init-friend-feed/";
+const LISTENING_ACTIVITY_SUBSCRIBE_PATH: &str = "/listening-activity/v1/subscribe";
+const LISTENING_ACTIVITY_UNSUBSCRIBE_PATH: &str = "/listening-activity/v1/unsubscribe";
 
 const DEALER_START_TIMEOUT: Duration = Duration::from_secs(15);
 const DEALER_CONN_ID_TIMEOUT: Duration = Duration::from_secs(8);
-const INIT_FRIEND_FEED_TIMEOUT: Duration = Duration::from_secs(10);
+const LISTENING_ACTIVITY_SUB_TIMEOUT: Duration = Duration::from_secs(10);
+const LISTENING_ACTIVITY_UNSUB_TIMEOUT: Duration = Duration::from_secs(3);
+const SUBSCRIPTION_RENEW_LEAD_SECS: u64 = 60;
+const MIN_SUBSCRIPTION_RENEW_SECS: u64 = 60;
+const FALLBACK_SUBSCRIPTION_RENEW_SECS: u64 = 600;
 
 const MERCURY_MAX_SUBSCRIPTIONS: usize = 50;
 const MERCURY_SUB_TIMEOUT: Duration = Duration::from_secs(4);
@@ -265,7 +270,7 @@ fn parse_single_friend_json(uri: &str, json: &serde_json::Value) -> Option<LiveE
             }
         })
         .or_else(|| {
-            json_str(json, &["user_uri", "userUri"]).map(|s| {
+            json_str(json, &["user_uri", "userUri", "username"]).map(|s| {
                 if s.starts_with("spotify:user:") {
                     s
                 } else {
@@ -282,7 +287,12 @@ fn parse_single_friend_json(uri: &str, json: &serde_json::Value) -> Option<LiveE
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .or_else(|| {
-            activity.and_then(|a| json_str(a, &["entityUri", "entity_uri", "trackUri", "track_uri"]))
+            activity.and_then(|a| {
+                json_str(
+                    a,
+                    &["uri", "entityUri", "entity_uri", "trackUri", "track_uri"],
+                )
+            })
         })
         .or_else(|| json_str(json, &["track_uri", "trackUri", "entityUri", "entity_uri"]))
         .filter(|s| s.starts_with("spotify:track:") || s.starts_with("spotify:episode:"))?;
@@ -319,6 +329,9 @@ fn parse_single_friend_json(uri: &str, json: &serde_json::Value) -> Option<LiveE
         .and_then(parse_json_timestamp_ms)
         .unwrap_or_else(|| Utc::now().timestamp_millis());
 
+    // Proto3 JSON in `listening-activity/v1` omits `isPlaying` when false; legacy `presence2`
+    // messages omit it because they only fire on play starts.
+    let default_playing = activity.is_none() && !uri.starts_with(DEALER_LISTENING_ACTIVITY_URI);
     let playing = json
         .get("playing")
         .or_else(|| json.get("isPlaying"))
@@ -331,7 +344,7 @@ fn parse_single_friend_json(uri: &str, json: &serde_json::Value) -> Option<LiveE
             })
         })
         .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(default_playing);
 
     Some(LiveEntry {
         user_uri,
@@ -493,8 +506,24 @@ pub(crate) fn parse_push_payload(uri: &str, payload: &[u8]) -> Option<ParsedPush
             return Some(ParsedPushPayload::LegacyFriends(resp.friends));
         }
 
+        if let Some(activities) = json.get("activities").and_then(|v| v.as_array()) {
+            let entries: Vec<LiveEntry> = activities
+                .iter()
+                .filter_map(|item| parse_single_friend_json(uri, item))
+                .collect();
+            if !entries.is_empty() {
+                return Some(ParsedPushPayload::Entries(entries));
+            }
+        }
+
         if let Some(entry) = parse_single_friend_json(uri, &json) {
             return Some(ParsedPushPayload::Entries(vec![entry]));
+        }
+
+        // A structured listening-activity push whose entityUri isn't a track/episode (e.g. local
+        // track or cleared activity) should be ignored rather than triggering a full HTTP resync.
+        if json.get("username").is_some() && json.get("activity").is_some() {
+            return None;
         }
 
         return is_invalidation_topic(uri).then_some(ParsedPushPayload::InvalidateHint);
@@ -539,14 +568,90 @@ fn extract_connection_id(headers: &HashMap<String, String>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-async fn register_dealer_friend_feed(session: &Session, connection_id: &str) -> Result<Bytes> {
+#[derive(Debug, Default)]
+pub(crate) struct ListeningActivitySubscribeResponse {
+    pub(crate) entries: Vec<LiveEntry>,
+    pub(crate) expiration_ms: Option<i64>,
+}
+
+pub(crate) fn build_listening_activity_subscription_body(
+    usernames: &[String],
+    connection_id: &str,
+) -> String {
+    let subscriptions: Vec<serde_json::Value> = usernames
+        .iter()
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty())
+        .map(|username| {
+            serde_json::json!({
+                "username": username,
+                "pusher": {
+                    "connectionId": connection_id,
+                }
+            })
+        })
+        .collect();
+    serde_json::json!({ "subscriptions": subscriptions }).to_string()
+}
+
+pub(crate) fn parse_listening_activity_subscribe_response(
+    bytes: &[u8],
+) -> Result<ListeningActivitySubscribeResponse> {
+    let trimmed = bytes.trim_ascii();
+    if trimmed.is_empty() {
+        return Ok(ListeningActivitySubscribeResponse::default());
+    }
+    let json: serde_json::Value = serde_json::from_slice(trimmed)
+        .map_err(|e| anyhow!("Failed to parse listening-activity subscribe JSON: {e}"))?;
+
+    let entries = json
+        .get("activities")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| parse_single_friend_json(DEALER_LISTENING_ACTIVITY_URI, item))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let expiration_ms = json
+        .get("subscriptionExpirationTimestamp")
+        .or_else(|| json.get("subscription_expiration_timestamp"))
+        .and_then(parse_json_timestamp_ms);
+
+    Ok(ListeningActivitySubscribeResponse {
+        entries,
+        expiration_ms,
+    })
+}
+
+pub(crate) fn compute_subscription_renew_delay(
+    expiration_ms: Option<i64>,
+    now_ms: i64,
+) -> Duration {
+    let Some(exp) = expiration_ms else {
+        return Duration::from_secs(FALLBACK_SUBSCRIPTION_RENEW_SECS);
+    };
+    let lead_ms = (SUBSCRIPTION_RENEW_LEAD_SECS * 1000) as i64;
+    let min_ms = (MIN_SUBSCRIPTION_RENEW_SECS * 1000) as i64;
+    let delay_ms = (exp - now_ms - lead_ms).max(min_ms);
+    Duration::from_millis(delay_ms as u64)
+}
+
+async fn post_listening_activity_subscription(
+    session: &Session,
+    path: &str,
+    connection_id: &str,
+    usernames: &[String],
+) -> Result<Bytes> {
     let base_url = session
         .spclient()
         .base_url()
         .await
         .map_err(|e| anyhow!("Failed to resolve spclient access point: {e}"))?;
-    let encoded_id = percent_encode_path_segment(connection_id);
-    let url = format!("{base_url}{INIT_FRIEND_FEED_PATH_PREFIX}{encoded_id}");
+    let url = format!("{base_url}{path}");
+    let body = build_listening_activity_subscription_body(usernames, connection_id);
+    let body_bytes = Bytes::from(body);
 
     let token = session
         .login5()
@@ -555,10 +660,11 @@ async fn register_dealer_friend_feed(session: &Session, connection_id: &str) -> 
         .map_err(|e| anyhow!("Failed to obtain login5 auth token: {e}"))?;
 
     let mut builder = Request::builder()
-        .method(Method::PUT)
+        .method(Method::POST)
         .uri(&url)
         .header(ACCEPT, HeaderValue::from_static("application/json"))
-        .header(CONTENT_LENGTH, 0)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .header(CONTENT_LENGTH, body_bytes.len())
         .header(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("{} {}", token.token_type, token.access_token))?,
@@ -570,14 +676,67 @@ async fn register_dealer_friend_feed(session: &Session, connection_id: &str) -> 
         builder = builder.header(CLIENT_TOKEN, val);
     }
 
-    let request = builder.body(Bytes::new())?;
-    // `HttpClient::request_body` checks `response.status().is_success()` and returns
-    // `Err(HttpClientError::StatusCode(code))` on any non-2xx response.
+    let request = builder.body(body_bytes)?;
     session
         .http_client()
         .request_body(request)
         .await
-        .map_err(|e| anyhow!("Failed to register Dealer connection with init-friend-feed: {e}"))
+        .map_err(|e| anyhow!("Failed to POST {path}: {e}"))
+}
+
+async fn subscribe_listening_activity(
+    session: &Session,
+    connection_id: &str,
+    usernames: &[String],
+    debug_push: bool,
+) -> Result<ListeningActivitySubscribeResponse> {
+    let raw = post_listening_activity_subscription(
+        session,
+        LISTENING_ACTIVITY_SUBSCRIBE_PATH,
+        connection_id,
+        usernames,
+    )
+    .await?;
+
+    let parsed = parse_listening_activity_subscribe_response(&raw)?;
+    if debug_push {
+        eprintln!(
+            "[debug-push] source=listening-activity-subscribe users={} payload_len={} activities={} expiration_ms={:?}",
+            usernames.len(),
+            raw.len(),
+            parsed.entries.len(),
+            parsed.expiration_ms
+        );
+    }
+    Ok(parsed)
+}
+
+async fn unsubscribe_listening_activity(
+    session: &Session,
+    connection_id: &str,
+    usernames: &[String],
+    debug_push: bool,
+) {
+    if usernames.is_empty() || connection_id.is_empty() {
+        return;
+    }
+    let res = timeout(
+        LISTENING_ACTIVITY_UNSUB_TIMEOUT,
+        post_listening_activity_subscription(
+            session,
+            LISTENING_ACTIVITY_UNSUBSCRIBE_PATH,
+            connection_id,
+            usernames,
+        ),
+    )
+    .await;
+    if debug_push {
+        eprintln!(
+            "[debug-push] source=listening-activity-unsubscribe users={} ok={}",
+            usernames.len(),
+            matches!(res, Ok(Ok(_)))
+        );
+    }
 }
 
 struct DealerState {
@@ -585,6 +744,9 @@ struct DealerState {
     presence2: Subscription,
     presence_view: Subscription,
     listening_activity: Subscription,
+    connection_id: String,
+    subscribed_users: BTreeSet<String>,
+    renew_deadline: Option<TokioInstant>,
 }
 
 enum DealerEvent {
@@ -666,10 +828,13 @@ async fn next_transport_event(transport: &mut ActiveTransport) -> TransportTickE
     }
 }
 
-async fn teardown_transport(session: &Session, transport: &mut ActiveTransport) {
+async fn teardown_transport(session: &Session, transport: &mut ActiveTransport, debug_push: bool) {
     match transport {
-        ActiveTransport::Dealer(_) => {
+        ActiveTransport::Dealer(dealer) => {
+            let conn_id = dealer.connection_id.clone();
+            let users: Vec<String> = dealer.subscribed_users.iter().cloned().collect();
             *transport = ActiveTransport::HttpPolling;
+            unsubscribe_listening_activity(session, &conn_id, &users, debug_push).await;
             session.dealer().close().await;
         }
         ActiveTransport::Mercury(mercury) => {
@@ -677,6 +842,13 @@ async fn teardown_transport(session: &Session, transport: &mut ActiveTransport) 
             *transport = ActiveTransport::HttpPolling;
         }
         ActiveTransport::HttpPolling => {}
+    }
+}
+
+fn dealer_renew_deadline(transport: &ActiveTransport) -> Option<TokioInstant> {
+    match transport {
+        ActiveTransport::Dealer(dealer) => dealer.renew_deadline,
+        ActiveTransport::Mercury(_) | ActiveTransport::HttpPolling => None,
     }
 }
 
@@ -726,9 +898,10 @@ fn emit_transport_changed(
 async fn try_start_dealer(
     session: &Session,
     dealer_consumed: &mut bool,
+    known_friends: &BTreeSet<String>,
     debug_push: bool,
     shutdown_rx: &mut watch::Receiver<bool>,
-) -> Result<(DealerState, Bytes)> {
+) -> Result<(DealerState, ListeningActivitySubscribeResponse)> {
     if *dealer_consumed {
         return Err(anyhow!("Dealer manager already consumed on this session"));
     }
@@ -808,24 +981,43 @@ async fn try_start_dealer(
         }
     };
 
-    let init_res = tokio::select! {
+    let usernames: Vec<String> = known_friends.iter().cloned().collect();
+    let sub_res = tokio::select! {
         _ = wait_for_shutdown(shutdown_rx) => {
             session.dealer().close().await;
             return Err(anyhow!("Shutdown requested"));
         }
-        res = timeout(INIT_FRIEND_FEED_TIMEOUT, register_dealer_friend_feed(session, &connection_id)) => res,
+        res = timeout(
+            LISTENING_ACTIVITY_SUB_TIMEOUT,
+            subscribe_listening_activity(session, &connection_id, &usernames, debug_push),
+        ) => res,
     };
 
-    let init_body = match init_res {
-        Ok(Ok(body)) => body,
+    let sub_resp = match sub_res {
+        Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
             session.dealer().close().await;
             return Err(e);
         }
         Err(_) => {
             session.dealer().close().await;
-            return Err(anyhow!("Timed out registering Dealer init-friend-feed"));
+            return Err(anyhow!(
+                "Timed out subscribing to listening-activity via Dealer"
+            ));
         }
+    };
+
+    let subscribed_users: BTreeSet<String> = usernames.into_iter().collect();
+    let renew_deadline = if subscribed_users.is_empty() {
+        None
+    } else {
+        Some(
+            TokioInstant::now()
+                + compute_subscription_renew_delay(
+                    sub_resp.expiration_ms,
+                    Utc::now().timestamp_millis(),
+                ),
+        )
     };
 
     Ok((
@@ -834,8 +1026,11 @@ async fn try_start_dealer(
             presence2,
             presence_view,
             listening_activity,
+            connection_id,
+            subscribed_users,
+            renew_deadline,
         },
-        init_body,
+        sub_resp,
     ))
 }
 
@@ -988,52 +1183,28 @@ async fn subscribe_new_mercury_friends(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn emit_init_friend_feed_body(
+async fn emit_subscribe_entries(
     session: &Session,
-    init_body: &Bytes,
+    entries: Vec<LiveEntry>,
     name_cache: &mut NameCache,
     known_friends: &mut BTreeSet<String>,
     activity_signatures: &mut HashMap<String, (String, i64)>,
     event_tx: &mpsc::UnboundedSender<ActivityEvent>,
-    debug_push: bool,
 ) -> bool {
-    if init_body.is_empty() {
+    if entries.is_empty() {
         return false;
     }
 
-    let parsed = parse_push_payload("hm://presence-view/v2/init-friend-feed", init_body);
-    if debug_push {
-        eprintln!(
-            "[debug-push] source=init-friend-feed payload_len={} parsed={:?}",
-            init_body.len(),
-            parsed
-        );
-    }
-
-    match parsed {
-        Some(ParsedPushPayload::Entries(entries)) if !entries.is_empty() => {
-            if let Ok(friends) = enrich_live_entries(session, entries, name_cache).await
-                && !friends.is_empty()
-            {
-                record_known_friends(known_friends, &friends);
-                let _ = record_activity_signatures(activity_signatures, &friends);
-                let _ = event_tx.send(ActivityEvent::FullSnapshot {
-                    friends,
-                    transport: TransportMode::DealerPush,
-                });
-                return true;
-            }
-        }
-        Some(ParsedPushPayload::LegacyFriends(friends)) if !friends.is_empty() => {
-            record_known_friends(known_friends, &friends);
-            let _ = record_activity_signatures(activity_signatures, &friends);
-            let _ = event_tx.send(ActivityEvent::FullSnapshot {
-                friends,
-                transport: TransportMode::DealerPush,
-            });
-            return true;
-        }
-        _ => {}
+    if let Ok(friends) = enrich_live_entries(session, entries, name_cache).await
+        && !friends.is_empty()
+    {
+        record_known_friends(known_friends, &friends);
+        let _ = record_activity_signatures(activity_signatures, &friends, None);
+        let _ = event_tx.send(ActivityEvent::FullSnapshot {
+            friends,
+            transport: TransportMode::DealerPush,
+        });
+        return true;
     }
 
     false
@@ -1042,18 +1213,65 @@ async fn emit_init_friend_feed_body(
 fn record_activity_signatures(
     signatures: &mut HashMap<String, (String, i64)>,
     friends: &[FriendActivity],
+    tracked_usernames: Option<&BTreeSet<String>>,
 ) -> bool {
     let mut changed = false;
+    let had_existing = !signatures.is_empty();
     for friend in friends {
         let sig = (friend.track.uri.clone(), friend.timestamp);
         if signatures.get(&friend.user.uri) != Some(&sig) {
-            if !signatures.is_empty() {
-                changed = true;
+            if had_existing {
+                let is_tracked = match tracked_usernames {
+                    Some(tracked) => tracked.contains(&user_id_from_uri(&friend.user.uri)),
+                    None => true,
+                };
+                if is_tracked {
+                    changed = true;
+                }
             }
             signatures.insert(friend.user.uri.clone(), sig);
         }
     }
     changed
+}
+
+async fn sync_dealer_subscriptions(
+    session: &Session,
+    dealer: &mut DealerState,
+    known_friends: &BTreeSet<String>,
+    debug_push: bool,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) {
+    let has_new_friends = known_friends
+        .iter()
+        .any(|u| !dealer.subscribed_users.contains(u));
+    if !has_new_friends || *shutdown_rx.borrow() {
+        return;
+    }
+
+    let usernames: Vec<String> = known_friends.iter().cloned().collect();
+    let sub_res = tokio::select! {
+        _ = wait_for_shutdown(shutdown_rx) => return,
+        res = timeout(
+            LISTENING_ACTIVITY_SUB_TIMEOUT,
+            subscribe_listening_activity(session, &dealer.connection_id, &usernames, debug_push),
+        ) => res,
+    };
+
+    if let Ok(Ok(resp)) = sub_res {
+        dealer.subscribed_users = usernames.into_iter().collect();
+        dealer.renew_deadline = if dealer.subscribed_users.is_empty() {
+            None
+        } else {
+            Some(
+                TokioInstant::now()
+                    + compute_subscription_renew_delay(
+                        resp.expiration_ms,
+                        Utc::now().timestamp_millis(),
+                    ),
+            )
+        };
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1065,20 +1283,39 @@ async fn perform_full_sync(
     activity_signatures: &mut HashMap<String, (String, i64)>,
     event_tx: &mpsc::UnboundedSender<ActivityEvent>,
     consecutive_errors: &mut u32,
+    debug_push: bool,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> bool {
     match fetch_buddylist(session, name_cache).await {
         Ok(friends) => {
             *consecutive_errors = 0;
             record_known_friends(known_friends, &friends);
-            let changed = record_activity_signatures(activity_signatures, &friends);
+            let tracked = match transport {
+                ActiveTransport::Dealer(dealer) => Some(&dealer.subscribed_users),
+                _ => None,
+            };
+            let changed = record_activity_signatures(activity_signatures, &friends, tracked);
             let mode = transport.mode();
             let _ = event_tx.send(ActivityEvent::FullSnapshot {
                 friends,
                 transport: mode,
             });
-            if let ActiveTransport::Mercury(mercury) = transport {
-                subscribe_new_mercury_friends(session, mercury, known_friends, shutdown_rx).await;
+            match transport {
+                ActiveTransport::Dealer(dealer) => {
+                    sync_dealer_subscriptions(
+                        session,
+                        dealer,
+                        known_friends,
+                        debug_push,
+                        shutdown_rx,
+                    )
+                    .await;
+                }
+                ActiveTransport::Mercury(mercury) => {
+                    subscribe_new_mercury_friends(session, mercury, known_friends, shutdown_rx)
+                        .await;
+                }
+                ActiveTransport::HttpPolling => {}
             }
             changed
         }
@@ -1114,7 +1351,7 @@ async fn handle_parsed_push(
         ParsedPushPayload::LegacyFriends(friends) => {
             *consecutive_errors = 0;
             record_known_friends(known_friends, &friends);
-            let _ = record_activity_signatures(activity_signatures, &friends);
+            let _ = record_activity_signatures(activity_signatures, &friends, None);
             let _ = event_tx.send(ActivityEvent::FullSnapshot {
                 friends,
                 transport: transport_mode,
@@ -1128,7 +1365,7 @@ async fn handle_parsed_push(
                 Ok(activities) => {
                     *consecutive_errors = 0;
                     record_known_friends(known_friends, &activities);
-                    let _ = record_activity_signatures(activity_signatures, &activities);
+                    let _ = record_activity_signatures(activity_signatures, &activities, None);
                     for activity in activities {
                         let _ = event_tx.send(ActivityEvent::FriendUpdated {
                             activity,
@@ -1203,11 +1440,16 @@ fn parse_dealer_message(msg: &DealerMessage, debug_push: bool) -> Option<ParsedP
     };
     let parsed = parse_push_payload(&msg.uri, payload_bytes);
     if debug_push {
+        let preview: String = String::from_utf8_lossy(payload_bytes)
+            .chars()
+            .take(300)
+            .collect();
         eprintln!(
-            "[debug-push] source=dealer uri={} headers={:?} payload_len={} parsed={:?}",
+            "[debug-push] source=dealer uri={} headers={:?} payload_len={} preview={:?} parsed={:?}",
             msg.uri,
             msg.headers,
             payload_bytes.len(),
+            preview,
             parsed
         );
     }
@@ -1228,39 +1470,94 @@ async fn establish_transport(
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> ActiveTransport {
     let mut fallback_reason: Option<String> = None;
+    let mut prefetched_friends: Option<Vec<FriendActivity>> = None;
     let mut initial_emitted = false;
 
     if matches!(
         config.transport,
         TransportPreference::Auto | TransportPreference::Dealer
     ) {
-        match try_start_dealer(session, dealer_consumed, config.debug_push, shutdown_rx).await {
-            Ok((dealer_state, init_body)) => {
+        // Fetch `/listening-activity/v1/feed` first so we know which friend usernames to
+        // register with `/listening-activity/v1/subscribe` on the Dealer connection.
+        if known_friends.is_empty() {
+            match fetch_buddylist(session, name_cache).await {
+                Ok(friends) => {
+                    *consecutive_errors = 0;
+                    record_known_friends(known_friends, &friends);
+                    let _ = record_activity_signatures(activity_signatures, &friends, None);
+                    prefetched_friends = Some(friends);
+                }
+                Err(e) => {
+                    *consecutive_errors = consecutive_errors.saturating_add(1);
+                    let _ = event_tx.send(ActivityEvent::Error {
+                        message: e.to_string(),
+                        consecutive_errors: *consecutive_errors,
+                    });
+                }
+            }
+        }
+
+        if *shutdown_rx.borrow() {
+            return ActiveTransport::HttpPolling;
+        }
+
+        match try_start_dealer(
+            session,
+            dealer_consumed,
+            known_friends,
+            config.debug_push,
+            shutdown_rx,
+        )
+        .await
+        {
+            Ok((dealer_state, sub_resp)) => {
                 *consecutive_errors = 0;
                 emit_transport_changed(event_tx, last_mode, TransportMode::DealerPush, None);
                 let mut transport = ActiveTransport::Dealer(dealer_state);
-                let emitted = emit_init_friend_feed_body(
-                    session,
-                    &init_body,
-                    name_cache,
-                    known_friends,
-                    activity_signatures,
-                    event_tx,
-                    config.debug_push,
-                )
-                .await;
-                if !emitted {
-                    let _ = perform_full_sync(
+
+                if let Some(friends) = prefetched_friends.take() {
+                    let _ = event_tx.send(ActivityEvent::FullSnapshot {
+                        friends,
+                        transport: TransportMode::DealerPush,
+                    });
+                    // Apply any fresher activity updates returned directly by `/subscribe`.
+                    if !sub_resp.entries.is_empty()
+                        && let Ok(activities) =
+                            enrich_live_entries(session, sub_resp.entries, name_cache).await
+                    {
+                        record_known_friends(known_friends, &activities);
+                        let _ = record_activity_signatures(activity_signatures, &activities, None);
+                        for activity in activities {
+                            let _ = event_tx.send(ActivityEvent::FriendUpdated {
+                                activity,
+                                transport: TransportMode::DealerPush,
+                            });
+                        }
+                    }
+                } else {
+                    let emitted = emit_subscribe_entries(
                         session,
-                        &mut transport,
+                        sub_resp.entries,
                         name_cache,
                         known_friends,
                         activity_signatures,
                         event_tx,
-                        consecutive_errors,
-                        shutdown_rx,
                     )
                     .await;
+                    if !emitted {
+                        let _ = perform_full_sync(
+                            session,
+                            &mut transport,
+                            name_cache,
+                            known_friends,
+                            activity_signatures,
+                            event_tx,
+                            consecutive_errors,
+                            config.debug_push,
+                            shutdown_rx,
+                        )
+                        .await;
+                    }
                 }
                 return transport;
             }
@@ -1278,13 +1575,19 @@ async fn establish_transport(
         config.transport,
         TransportPreference::Auto | TransportPreference::Mercury
     ) {
-        if known_friends.is_empty() {
+        if let Some(friends) = prefetched_friends.take() {
+            // Emit immediately so UI/CLI hydrate right away while Mercury probes.
+            let _ = event_tx.send(ActivityEvent::FullSnapshot {
+                friends,
+                transport: TransportMode::HttpPolling,
+            });
+            initial_emitted = true;
+        } else if known_friends.is_empty() {
             match fetch_buddylist(session, name_cache).await {
                 Ok(friends) => {
                     *consecutive_errors = 0;
                     record_known_friends(known_friends, &friends);
-                    let _ = record_activity_signatures(activity_signatures, &friends);
-                    // Emit immediately so UI/CLI hydrate right away while Mercury probes.
+                    let _ = record_activity_signatures(activity_signatures, &friends, None);
                     let _ = event_tx.send(ActivityEvent::FullSnapshot {
                         friends,
                         transport: TransportMode::HttpPolling,
@@ -1323,6 +1626,7 @@ async fn establish_transport(
                         activity_signatures,
                         event_tx,
                         consecutive_errors,
+                        config.debug_push,
                         shutdown_rx,
                     )
                     .await;
@@ -1349,7 +1653,12 @@ async fn establish_transport(
         fallback_reason,
     );
     let mut transport = ActiveTransport::HttpPolling;
-    if !initial_emitted {
+    if let Some(friends) = prefetched_friends.take() {
+        let _ = event_tx.send(ActivityEvent::FullSnapshot {
+            friends,
+            transport: TransportMode::HttpPolling,
+        });
+    } else if !initial_emitted {
         let _ = perform_full_sync(
             session,
             &mut transport,
@@ -1358,6 +1667,7 @@ async fn establish_transport(
             activity_signatures,
             event_tx,
             consecutive_errors,
+            config.debug_push,
             shutdown_rx,
         )
         .await;
@@ -1497,7 +1807,7 @@ async fn run_activity_stream(
         }
 
         if session.is_invalid() || consecutive_errors >= CONSECUTIVE_ERRORS_RECONNECT_THRESHOLD {
-            teardown_transport(&session, &mut transport).await;
+            teardown_transport(&session, &mut transport, config.debug_push).await;
             session.shutdown();
             invalidate_deadline = None;
             dealer_push_seen_since_resync = false;
@@ -1542,6 +1852,8 @@ async fn run_activity_stream(
             continue;
         }
 
+        let renew_deadline = dealer_renew_deadline(&transport);
+
         tokio::select! {
             _ = wait_for_shutdown(&mut shutdown_rx) => {
                 break;
@@ -1556,6 +1868,7 @@ async fn run_activity_stream(
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
+                    config.debug_push,
                     &mut shutdown_rx,
                 )
                 .await;
@@ -1576,6 +1889,7 @@ async fn run_activity_stream(
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
+                    config.debug_push,
                     &mut shutdown_rx,
                 )
                 .await;
@@ -1586,6 +1900,83 @@ async fn run_activity_stream(
                     consecutive_errors,
                 );
             }
+            _ = sleep_until_opt(renew_deadline) => {
+                if let ActiveTransport::Dealer(dealer) = &mut transport {
+                    let usernames: Vec<String> = known_friends.iter().cloned().collect();
+                    if usernames.is_empty() {
+                        dealer.renew_deadline = None;
+                    } else {
+                        let conn_id = dealer.connection_id.clone();
+                        let renew_res = tokio::select! {
+                            _ = wait_for_shutdown(&mut shutdown_rx) => break,
+                            res = timeout(
+                                LISTENING_ACTIVITY_SUB_TIMEOUT,
+                                subscribe_listening_activity(
+                                    &session,
+                                    &conn_id,
+                                    &usernames,
+                                    config.debug_push,
+                                ),
+                            ) => res,
+                        };
+                        match renew_res {
+                            Ok(Ok(sub_resp)) => {
+                                consecutive_errors = 0;
+                                dealer.subscribed_users = usernames.into_iter().collect();
+                                dealer.renew_deadline = Some(
+                                    TokioInstant::now()
+                                        + compute_subscription_renew_delay(
+                                            sub_resp.expiration_ms,
+                                            Utc::now().timestamp_millis(),
+                                        ),
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                teardown_transport(&session, &mut transport, config.debug_push).await;
+                                let reason = format!("Dealer subscription renewal failed: {e}");
+                                transport = downgrade_after_dealer(
+                                    &session,
+                                    config.transport,
+                                    &known_friends,
+                                    &event_tx,
+                                    &mut last_mode,
+                                    reason,
+                                    &mut shutdown_rx,
+                                )
+                                .await;
+                                next_tick = next_tick_instant(
+                                    &transport,
+                                    poll_interval_secs,
+                                    resync_interval_secs,
+                                    consecutive_errors,
+                                );
+                                next_upgrade = next_upgrade_instant(&transport, config.transport);
+                            }
+                            Err(_) => {
+                                teardown_transport(&session, &mut transport, config.debug_push).await;
+                                let reason = "Dealer subscription renewal timed out".to_string();
+                                transport = downgrade_after_dealer(
+                                    &session,
+                                    config.transport,
+                                    &known_friends,
+                                    &event_tx,
+                                    &mut last_mode,
+                                    reason,
+                                    &mut shutdown_rx,
+                                )
+                                .await;
+                                next_tick = next_tick_instant(
+                                    &transport,
+                                    poll_interval_secs,
+                                    resync_interval_secs,
+                                    consecutive_errors,
+                                );
+                                next_upgrade = next_upgrade_instant(&transport, config.transport);
+                            }
+                        }
+                    }
+                }
+            }
             _ = tokio::time::sleep_until(next_tick) => {
                 let changed = perform_full_sync(
                     &session,
@@ -1595,6 +1986,7 @@ async fn run_activity_stream(
                     &mut activity_signatures,
                     &event_tx,
                     &mut consecutive_errors,
+                    config.debug_push,
                     &mut shutdown_rx,
                 )
                 .await;
@@ -1607,7 +1999,7 @@ async fn run_activity_stream(
                         dealer_stale_resyncs = dealer_stale_resyncs.saturating_add(1);
                         if dealer_stale_resyncs >= DEALER_STALE_RESYNC_THRESHOLD {
                             dealer_stale_resyncs = 0;
-                            teardown_transport(&session, &mut transport).await;
+                            teardown_transport(&session, &mut transport, config.debug_push).await;
                             transport = downgrade_after_dealer(
                                 &session,
                                 config.transport,
@@ -1641,7 +2033,7 @@ async fn run_activity_stream(
                             match connect_cached(&cache_dir).await {
                                 Ok(new_session) => {
                                     consecutive_errors = 0;
-                                    teardown_transport(&session, &mut transport).await;
+                                    teardown_transport(&session, &mut transport, config.debug_push).await;
                                     session.shutdown();
                                     session = new_session;
                                     dealer_consumed = false;
@@ -1720,25 +2112,62 @@ async fn run_activity_stream(
                             );
                         }
                         if let Some(conn_id) = conn_id {
+                            let (old_conn_id, old_users) = match &transport {
+                                ActiveTransport::Dealer(dealer) if dealer.connection_id != conn_id => (
+                                    Some(dealer.connection_id.clone()),
+                                    dealer.subscribed_users.iter().cloned().collect::<Vec<_>>(),
+                                ),
+                                _ => (None, Vec::new()),
+                            };
+                            if let Some(old_id) = old_conn_id {
+                                unsubscribe_listening_activity(
+                                    &session,
+                                    &old_id,
+                                    &old_users,
+                                    config.debug_push,
+                                )
+                                .await;
+                            }
+
+                            let usernames: Vec<String> = known_friends.iter().cloned().collect();
                             let reg_res = tokio::select! {
                                 _ = wait_for_shutdown(&mut shutdown_rx) => break,
                                 res = timeout(
-                                    INIT_FRIEND_FEED_TIMEOUT,
-                                    register_dealer_friend_feed(&session, &conn_id),
+                                    LISTENING_ACTIVITY_SUB_TIMEOUT,
+                                    subscribe_listening_activity(
+                                        &session,
+                                        &conn_id,
+                                        &usernames,
+                                        config.debug_push,
+                                    ),
                                 ) => res,
                             };
                             match reg_res {
-                                Ok(Ok(body)) => {
+                                Ok(Ok(sub_resp)) => {
                                     consecutive_errors = 0;
                                     dealer_stale_resyncs = 0;
-                                    let emitted = emit_init_friend_feed_body(
+                                    if let ActiveTransport::Dealer(dealer) = &mut transport {
+                                        dealer.connection_id = conn_id;
+                                        dealer.subscribed_users = usernames.into_iter().collect();
+                                        dealer.renew_deadline = if dealer.subscribed_users.is_empty() {
+                                            None
+                                        } else {
+                                            Some(
+                                                TokioInstant::now()
+                                                    + compute_subscription_renew_delay(
+                                                        sub_resp.expiration_ms,
+                                                        Utc::now().timestamp_millis(),
+                                                    ),
+                                            )
+                                        };
+                                    }
+                                    let emitted = emit_subscribe_entries(
                                         &session,
-                                        &body,
+                                        sub_resp.entries,
                                         &mut name_cache,
                                         &mut known_friends,
                                         &mut activity_signatures,
                                         &event_tx,
-                                        config.debug_push,
                                     )
                                     .await;
                                     if !emitted {
@@ -1750,14 +2179,15 @@ async fn run_activity_stream(
                                             &mut activity_signatures,
                                             &event_tx,
                                             &mut consecutive_errors,
+                                            config.debug_push,
                                             &mut shutdown_rx,
                                         )
                                         .await;
                                     }
                                 }
                                 Ok(Err(e)) => {
-                                    teardown_transport(&session, &mut transport).await;
-                                    let reason = format!("Dealer re-registration failed: {e}");
+                                    teardown_transport(&session, &mut transport, config.debug_push).await;
+                                    let reason = format!("Dealer re-subscription failed: {e}");
                                     transport = downgrade_after_dealer(
                                         &session,
                                         config.transport,
@@ -1777,8 +2207,8 @@ async fn run_activity_stream(
                                     next_upgrade = next_upgrade_instant(&transport, config.transport);
                                 }
                                 Err(_) => {
-                                    teardown_transport(&session, &mut transport).await;
-                                    let reason = "Dealer re-registration timed out".to_string();
+                                    teardown_transport(&session, &mut transport, config.debug_push).await;
+                                    let reason = "Dealer re-subscription timed out".to_string();
                                     transport = downgrade_after_dealer(
                                         &session,
                                         config.transport,
@@ -1819,7 +2249,7 @@ async fn run_activity_stream(
                         }
                     }
                     TransportTickEvent::Dealer(DealerEvent::Closed) => {
-                        teardown_transport(&session, &mut transport).await;
+                        teardown_transport(&session, &mut transport, config.debug_push).await;
                         transport = downgrade_after_dealer(
                             &session,
                             config.transport,
@@ -1863,7 +2293,7 @@ async fn run_activity_stream(
                             false
                         };
                         if all_closed {
-                            teardown_transport(&session, &mut transport).await;
+                            teardown_transport(&session, &mut transport, config.debug_push).await;
                             emit_transport_changed(
                                 &event_tx,
                                 &mut last_mode,
@@ -1880,7 +2310,7 @@ async fn run_activity_stream(
                         }
                     }
                     TransportTickEvent::Mercury(None) => {
-                        teardown_transport(&session, &mut transport).await;
+                        teardown_transport(&session, &mut transport, config.debug_push).await;
                         emit_transport_changed(
                             &event_tx,
                             &mut last_mode,
@@ -1900,7 +2330,7 @@ async fn run_activity_stream(
         }
     }
 
-    teardown_transport(&session, &mut transport).await;
+    teardown_transport(&session, &mut transport, config.debug_push).await;
     session.shutdown();
 }
 
