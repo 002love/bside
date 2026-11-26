@@ -44,7 +44,11 @@ mod tests {
     use super::metadata::extract_cover_url;
     use super::models::{LiveEntry, TRACK_CACHE_CAP};
     use super::profile::parse_user_profile;
-    use super::realtime::{ParsedPushPayload, parse_push_payload, percent_encode_path_segment};
+    use super::realtime::{
+        ParsedPushPayload, build_listening_activity_subscription_body,
+        compute_subscription_renew_delay, parse_listening_activity_subscribe_response,
+        parse_push_payload, percent_encode_path_segment,
+    };
     use super::*;
 
     #[test]
@@ -970,5 +974,122 @@ mod tests {
         assert_eq!(cp.context_owner(), Some("Me"));
         assert!(cp.is_private_context());
         assert!(cp.context_image_url().is_none());
+    }
+
+    #[test]
+    fn listening_activity_dealer_push_and_subscribe_protocol() {
+        // 1. Official Dealer push on hm://listening-activity/... uses `username` + `activity.uri`
+        let push_playing = serde_json::json!({
+            "username": "friend123",
+            "activity": {
+                "uri": "spotify:track:1111111111111111111111",
+                "contextUri": "spotify:playlist:2222222222222222222222",
+                "isPlaying": true,
+                "timestamp": "2026-11-26T12:00:00Z"
+            }
+        })
+        .to_string();
+
+        match parse_push_payload("hm://listening-activity/v1/user/friend123", push_playing.as_bytes()) {
+            Some(ParsedPushPayload::Entries(entries)) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].user_uri, "spotify:user:friend123");
+                assert_eq!(entries[0].track_uri, "spotify:track:1111111111111111111111");
+                assert_eq!(
+                    entries[0].context_uri.as_deref(),
+                    Some("spotify:playlist:2222222222222222222222")
+                );
+                assert!(entries[0].playing);
+            }
+            other => panic!("expected Entries, got {other:?}"),
+        }
+
+        // 2. Proto3 JSON omits `isPlaying` when false (paused/stopped)
+        let push_paused = serde_json::json!({
+            "username": "friend123",
+            "activity": {
+                "uri": "spotify:track:1111111111111111111111",
+                "timestamp": "2026-11-26T12:03:00Z"
+            }
+        })
+        .to_string();
+
+        match parse_push_payload("hm://listening-activity/v1/user/friend123", push_paused.as_bytes()) {
+            Some(ParsedPushPayload::Entries(entries)) => {
+                assert_eq!(entries.len(), 1);
+                assert!(!entries[0].playing);
+            }
+            other => panic!("expected Entries with playing=false, got {other:?}"),
+        }
+
+        // 3. Structured push for local track is ignored (not treated as invalidation hint)
+        let push_local = serde_json::json!({
+            "username": "friend123",
+            "activity": {
+                "uri": "spotify:local:artist:album:track:120",
+                "isPlaying": true,
+                "timestamp": "2026-11-26T12:04:00Z"
+            }
+        })
+        .to_string();
+        assert!(
+            parse_push_payload("hm://listening-activity/v1/user/friend123", push_local.as_bytes())
+                .is_none()
+        );
+
+        // 4. Subscribe request payload format matches Spotify Desktop module 63227
+        let body_str = build_listening_activity_subscription_body(
+            &["alice".to_string(), "bob".to_string()],
+            "conn-id-abc+123==",
+        );
+        let body_json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+        assert_eq!(
+            body_json,
+            serde_json::json!({
+                "subscriptions": [
+                    { "username": "alice", "pusher": { "connectionId": "conn-id-abc+123==" } },
+                    { "username": "bob", "pusher": { "connectionId": "conn-id-abc+123==" } }
+                ]
+            })
+        );
+
+        // 5. Subscribe response parsing + renewal lead calculation
+        let sub_resp_json = serde_json::json!({
+            "activities": [
+                {
+                    "username": "alice",
+                    "activity": {
+                        "entityUri": "spotify:track:aaaaaaaaaaaaaaaaaaaaaa",
+                        "isPlaying": true,
+                        "timestamp": "2026-11-26T12:00:00Z",
+                        "contextUri": "spotify:album:bbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                }
+            ],
+            "subscriptionExpirationTimestamp": "2026-11-26T12:30:00Z"
+        })
+        .to_string();
+        let parsed = parse_listening_activity_subscribe_response(sub_resp_json.as_bytes()).unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].user_uri, "spotify:user:alice");
+        assert_eq!(
+            parsed.entries[0].track_uri,
+            "spotify:track:aaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(parsed.entries[0].playing);
+
+        let now_ms = chrono::DateTime::parse_from_rfc3339("2026-11-26T12:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        // 30 min expiration - 1 min lead = 29 min (1740s)
+        assert_eq!(
+            compute_subscription_renew_delay(parsed.expiration_ms, now_ms),
+            std::time::Duration::from_secs(29 * 60)
+        );
+        // Floor at 60s when expiration is near/past
+        assert_eq!(
+            compute_subscription_renew_delay(Some(now_ms + 10_000), now_ms),
+            std::time::Duration::from_secs(60)
+        );
     }
 }
