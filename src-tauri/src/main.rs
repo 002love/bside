@@ -66,6 +66,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("bside-tray")
         .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("bside")
         .menu(&menu)
         .show_menu_on_left_click(false)
