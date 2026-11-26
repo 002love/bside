@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Disc3, Lock, Music2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -47,12 +47,18 @@ export function CoverArt({
   className,
   hoverZoom = false,
 }: CoverArtProps) {
-  const [failed, setFailed] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
 
-  useEffect(() => {
-    setFailed(false);
-    setLoaded(false);
+  const failed = Boolean(src && failedSrc === src);
+  const loaded = Boolean(src && loadedSrc === src);
+
+  useLayoutEffect(() => {
+    const img = imgRef.current;
+    if (src && img && img.complete && img.naturalWidth > 0) {
+      setLoadedSrc(src);
+    }
   }, [src]);
 
   const cfg = SIZE_CLASSES[size];
@@ -69,11 +75,13 @@ export function CoverArt({
     >
       {src && !failed ? (
         <img
+          key={src}
+          ref={imgRef}
           src={src}
           alt={alt}
           loading="lazy"
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onLoad={() => setLoadedSrc(src)}
+          onError={() => setFailedSrc(src)}
           className={cn(
             'h-full w-full object-cover transition-all duration-300 ease-out',
             loaded ? 'opacity-100' : 'opacity-0',
