@@ -54,6 +54,9 @@ const FILTER_OPTIONS: { value: PlaybackFilter; label: string }[] = [
   { value: 'repeats', label: 'Repeats' },
 ];
 
+const HISTORY_GRID_COLS =
+  'grid grid-cols-[minmax(0,1fr)_auto_28px] sm:grid-cols-[minmax(0,1fr)_136px_44px_76px_28px] md:grid-cols-[minmax(0,1fr)_136px_190px_44px_76px_28px] lg:grid-cols-[minmax(0,1fr)_150px_220px_48px_56px_76px_28px] items-center gap-3';
+
 interface DayGroup {
   key: string;
   label: string;
@@ -273,13 +276,43 @@ export function HistoryTab({
 
   const hasActiveLocalFilter = playbackFilter !== 'all';
 
+  const countLabel = loading
+    ? 'Loading...'
+    : hasActiveLocalFilter
+      ? `${filteredItems.length.toLocaleString()} of ${items.length.toLocaleString()} loaded`
+      : total > 0
+        ? `${total.toLocaleString()} ${total === 1 ? 'listen' : 'listens'}`
+        : `${items.length.toLocaleString()} ${items.length === 1 ? 'listen' : 'listens'}`;
+
   return (
-    <div className="space-y-5">
-      {/* Clean Inline Toolbar */}
-      <div className="flex flex-col gap-3 border-b border-[var(--border-subtle)] pb-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="w-full bg-[#09090b] px-6 py-6 lg:px-8">
+      {/* Single Clean Top Row: Heading + Total Count + Export CSV */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-baseline gap-3">
+          <h1 className="font-display text-2xl font-bold tracking-[-0.03em] text-white sm:text-[26px]">
+            History
+          </h1>
+          <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+            {countLabel}
+          </span>
+        </div>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleExportCsv}
+          disabled={loading || filteredItems.length === 0}
+        >
+          <Download className="h-3.5 w-3.5" />
+          <span>Export CSV</span>
+        </Button>
+      </div>
+
+      {/* Inline Search + Sliding Segmented Filter */}
+      <div className="mt-4 flex flex-col gap-3 border-b border-white/[0.07] pb-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-1 flex-wrap items-center gap-2.5">
           {/* Search Input */}
-          <div className="relative w-full sm:w-72">
+          <div className="relative w-full sm:w-80">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
             <Input
               value={query}
@@ -292,7 +325,7 @@ export function HistoryTab({
                 type="button"
                 onClick={() => setQuery('')}
                 aria-label="Clear search"
-                className="tactile-press absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-primary)]"
+                className="tactile-press absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer text-[var(--ink-muted)] transition-colors hover:text-white"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -303,7 +336,7 @@ export function HistoryTab({
           <div
             role="radiogroup"
             aria-label="Filter listens"
-            className="inline-flex items-center rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] p-0.5"
+            className="inline-flex items-center rounded-[var(--radius-control)] border border-white/[0.08] bg-white/[0.03] p-0.5"
           >
             {FILTER_OPTIONS.map((opt) => {
               const active = playbackFilter === opt.value;
@@ -317,7 +350,7 @@ export function HistoryTab({
                   className={cn(
                     'tactile-press relative cursor-pointer rounded-[6px] px-2.5 py-1 text-xs font-medium transition-colors',
                     active
-                      ? 'text-[var(--ink-primary)]'
+                      ? 'text-white'
                       : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]',
                   )}
                 >
@@ -325,7 +358,7 @@ export function HistoryTab({
                     <motion.span
                       layoutId="history-filter-pill"
                       transition={SPRING_SNAPPY}
-                      className="absolute inset-0 rounded-[6px] bg-[var(--bg-elevated)] ring-1 ring-inset ring-white/[0.08]"
+                      className="absolute inset-0 rounded-[6px] bg-white/[0.12] ring-1 ring-inset ring-white/[0.08]"
                     />
                   )}
                   <span className="relative z-10">{opt.label}</span>
@@ -333,28 +366,6 @@ export function HistoryTab({
               );
             })}
           </div>
-        </div>
-
-        {/* Right: Count + CSV Export */}
-        <div className="flex items-center justify-between gap-3 sm:justify-end">
-          <span className="text-xs text-[var(--ink-muted)] tabular-nums">
-            {loading
-              ? 'Loading...'
-              : hasActiveLocalFilter
-                ? `${filteredItems.length} of ${items.length} loaded`
-                : total > 0
-                  ? `${items.length.toLocaleString()} of ${total.toLocaleString()} ${total === 1 ? 'listen' : 'listens'}`
-                  : `${items.length} ${items.length === 1 ? 'listen' : 'listens'}`}
-          </span>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={handleExportCsv}
-            disabled={loading || filteredItems.length === 0}
-          >
-            <Download className="h-3.5 w-3.5" />
-            <span>Export CSV</span>
-          </Button>
         </div>
       </div>
 
@@ -365,38 +376,56 @@ export function HistoryTab({
           <span>Loading listening history...</span>
         </div>
       ) : !loading && filteredItems.length === 0 ? (
-        <EmptyState
-          title={
-            debouncedQuery || hasActiveLocalFilter
-              ? 'No matching listens'
-              : 'No history recorded yet'
-          }
-          description={
-            debouncedQuery
-              ? `No listens matched "${debouncedQuery}" in the current view.`
-              : hasActiveLocalFilter
-                ? `No ${playbackFilter} listens found in the currently loaded history.`
-                : 'Run bside watch to begin logging Spotify Friend Activity.'
-          }
-          command={debouncedQuery || hasActiveLocalFilter ? undefined : 'bside watch'}
-        />
+        <div className="py-10">
+          <EmptyState
+            title={
+              debouncedQuery || hasActiveLocalFilter
+                ? 'No matching listens'
+                : 'No history recorded yet'
+            }
+            description={
+              debouncedQuery
+                ? `No listens matched "${debouncedQuery}" in the current view.`
+                : hasActiveLocalFilter
+                  ? `No ${playbackFilter} listens found in the currently loaded history.`
+                  : 'Run bside watch to begin logging Spotify Friend Activity.'
+            }
+            command={debouncedQuery || hasActiveLocalFilter ? undefined : 'bside watch'}
+          />
+        </div>
       ) : (
-        <div className="space-y-6">
+        <div className="mt-4 space-y-6">
+          {/* Razor-Sharp Column Header Bar */}
+          <div
+            className={cn(
+              HISTORY_GRID_COLS,
+              'border-b border-white/[0.06] pb-2 text-[11.5px] font-medium text-[var(--ink-muted)]',
+            )}
+          >
+            <div>Track</div>
+            <div className="hidden sm:block">Listener</div>
+            <div className="hidden md:block">Context</div>
+            <div className="hidden text-right sm:block">Status</div>
+            <div className="hidden text-right lg:block">Duration</div>
+            <div className="text-right">When</div>
+            <div aria-hidden="true" />
+          </div>
+
           {dayGroups.map((group) => (
             <section key={group.key} className="space-y-1">
-              {/* Calm Day Header */}
-              <div className="flex items-center gap-3 pb-2">
-                <h3 className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--ink-primary)]">
+              {/* Calm Day Group Header */}
+              <div className="flex items-center gap-3 pb-1.5">
+                <h2 className="text-[13px] font-semibold tracking-[-0.01em] text-white">
                   {group.label}
-                </h3>
-                <div className="h-px flex-1 bg-[var(--border-subtle)]" />
+                </h2>
+                <div className="h-px flex-1 bg-white/[0.07]" />
                 <span className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">
                   {group.items.length} {group.items.length === 1 ? 'listen' : 'listens'}
                 </span>
               </div>
 
-              {/* Hairline Listen Rows */}
-              <div className="divide-y divide-[var(--border-subtle)]">
+              {/* Borderless Aligned Grid Rows directly on #09090b */}
+              <div className="divide-y divide-white/[0.055]">
                 {group.items.map((item, idx) => {
                   const artists = item.all_artists || item.artist_name;
                   const trackUrl =
@@ -413,58 +442,63 @@ export function HistoryTab({
 
                   return (
                     <StaggerItem key={item.id} index={idx}>
-                      <div className="group flex items-center gap-3 py-2.5 transition-colors duration-150 hover:bg-[var(--bg-hover)] sm:-mx-2 sm:rounded-[8px] sm:px-2">
-                        {/* Cover Art */}
-                        <CoverArt
-                          src={item.cover_url}
-                          alt={item.track_name}
-                          size="sm"
-                          hoverZoom
-                        />
-
-                        {/* Track + Artist + Album */}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            {trackUrl ? (
-                              <a
-                                href={trackUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="truncate text-[13.5px] font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-ember)]"
-                              >
-                                {item.track_name}
-                              </a>
-                            ) : (
-                              <span className="truncate text-[13.5px] font-medium text-[var(--ink-primary)]">
-                                {item.track_name}
-                              </span>
-                            )}
-                            {item.explicit && (
-                              <InfoTooltip content="Explicit content" side="top">
-                                <span className="shrink-0 cursor-default rounded bg-white/[0.06] px-1 py-px text-[9.5px] font-medium leading-tight text-[var(--ink-muted)]">
-                                  E
+                      <div
+                        className={cn(
+                          HISTORY_GRID_COLS,
+                          'group -mx-2.5 rounded-[8px] px-2.5 py-2.5 transition-colors duration-150 hover:bg-white/[0.055]',
+                        )}
+                      >
+                        {/* 1. Cover + Track / Artist */}
+                        <div className="flex min-w-0 items-center gap-3">
+                          <CoverArt
+                            src={item.cover_url}
+                            alt={item.track_name}
+                            size="sm"
+                            hoverZoom
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              {trackUrl ? (
+                                <a
+                                  href={trackUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="truncate text-[13.5px] font-medium text-white transition-colors hover:underline"
+                                >
+                                  {item.track_name}
+                                </a>
+                              ) : (
+                                <span className="truncate text-[13.5px] font-medium text-white">
+                                  {item.track_name}
                                 </span>
-                              </InfoTooltip>
-                            )}
-                          </div>
-                          <div className="truncate text-xs text-[var(--ink-secondary)]">
-                            {artists}
-                            {item.album_name && (
-                              <span className="hidden text-[var(--ink-muted)] lg:inline">
-                                {' '}
-                                &middot; {item.album_name}
-                              </span>
-                            )}
+                              )}
+                              {item.explicit && (
+                                <InfoTooltip content="Explicit content" side="top">
+                                  <span className="shrink-0 cursor-default rounded bg-white/[0.08] px-1 py-px text-[9.5px] font-medium leading-tight text-[var(--ink-secondary)]">
+                                    E
+                                  </span>
+                                </InfoTooltip>
+                              )}
+                            </div>
+                            <div className="truncate text-xs text-[var(--ink-secondary)]">
+                              {artists}
+                              {item.album_name && (
+                                <span className="hidden text-[var(--ink-muted)] xl:inline">
+                                  {' '}
+                                  &middot; {item.album_name}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
-                        {/* Clickable Listener */}
-                        <div className="hidden w-32 shrink-0 sm:block">
+                        {/* 2. Listener */}
+                        <div className="hidden min-w-0 sm:flex sm:items-center">
                           <button
                             type="button"
                             disabled={!onFilterByUser}
                             onClick={() => onFilterByUser?.(item.user_uri)}
-                            className="tactile-press inline-flex max-w-full items-center gap-1.5 text-xs text-[var(--ink-secondary)] transition-colors enabled:cursor-pointer enabled:hover:text-[var(--ink-primary)]"
+                            className="tactile-press inline-flex max-w-full items-center gap-1.5 text-xs text-[var(--ink-secondary)] transition-colors enabled:cursor-pointer enabled:hover:text-white"
                             title={`Filter by ${item.user_name}`}
                           >
                             <UserAvatar
@@ -476,14 +510,14 @@ export function HistoryTab({
                           </button>
                         </div>
 
-                        {/* Subtle Clickable Playlist / Context */}
-                        <div className="hidden w-44 shrink-0 md:block">
+                        {/* 3. Context */}
+                        <div className="hidden min-w-0 md:flex md:items-center">
                           {contextLabel ? (
                             hasClickableContext && item.context_uri ? (
                               <button
                                 type="button"
                                 onClick={() => onSelectPlaylist?.(item.context_uri!)}
-                                className="tactile-press group/ctx inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 -ml-1.5 text-left text-xs text-[var(--ink-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]"
+                                className="tactile-press -ml-1.5 inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-[6px] px-1.5 py-0.5 text-left text-xs text-[var(--ink-muted)] transition-colors hover:bg-white/[0.07] hover:text-white"
                                 title={`Inspect ${contextLabel}`}
                               >
                                 <PlaylistCover
@@ -518,8 +552,8 @@ export function HistoryTab({
                           )}
                         </div>
 
-                        {/* Subtle Skip / Repeat Icons */}
-                        <div className="flex w-9 shrink-0 items-center justify-end gap-1.5">
+                        {/* 4. Status (Skip / Repeat) */}
+                        <div className="hidden items-center justify-end gap-1.5 sm:flex">
                           {item.was_skipped && (
                             <InfoTooltip
                               content="Switched to another track before finishing"
@@ -542,20 +576,22 @@ export function HistoryTab({
                           )}
                         </div>
 
-                        {/* Duration + Relative Timestamp */}
-                        <div className="flex shrink-0 items-center gap-3 text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
-                          <span className="hidden w-11 sm:inline">
-                            {formatDuration(item.duration_ms)}
-                          </span>
+                        {/* 5. Duration */}
+                        <div className="hidden text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)] lg:block">
+                          {formatDuration(item.duration_ms)}
+                        </div>
+
+                        {/* 6. When */}
+                        <div className="text-right font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
                           <InfoTooltip content={item.played_at_local} side="top">
-                            <span className="w-16 cursor-default text-right">
+                            <span className="cursor-default">
                               {formatRelativeTime(item.played_at_ms)}
                             </span>
                           </InfoTooltip>
                         </div>
 
-                        {/* Hover-Revealed Spotify Link */}
-                        <div className="flex w-7 shrink-0 justify-end">
+                        {/* 7. Link */}
+                        <div className="flex justify-end">
                           {trackUrl && (
                             <a
                               href={trackUrl}
@@ -563,7 +599,7 @@ export function HistoryTab({
                               rel="noreferrer"
                               title="Open in Spotify"
                               aria-label={`Open ${item.track_name} in Spotify`}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--ink-muted)] opacity-0 transition-all duration-150 hover:bg-[var(--bg-active)] hover:text-[var(--ink-primary)] group-hover:opacity-100 focus-visible:opacity-100"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--ink-muted)] opacity-0 transition-all duration-150 hover:bg-white/[0.1] hover:text-white group-hover:opacity-100 focus-visible:opacity-100"
                             >
                               <ExternalLink className="h-3.5 w-3.5" />
                             </a>
@@ -583,7 +619,7 @@ export function HistoryTab({
       {filteredItems.length > 0 && (
         <div
           ref={sentinelRef}
-          className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] pt-4"
+          className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.07] pt-4"
         >
           <span className="text-xs text-[var(--ink-muted)] tabular-nums">
             {total > 0
