@@ -1,7 +1,13 @@
-# bside
+<p align="center">
+  <img src="favicon.svg" width="84" height="84" alt="bside logo" />
+</p>
 
-[![CI](https://github.com/002love/bside/actions/workflows/ci.yml/badge.svg)](https://github.com/002love/bside/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<h1 align="center">bside</h1>
+
+<p align="center">
+  <a href="https://github.com/002love/bside/actions/workflows/ci.yml"><img src="https://github.com/002love/bside/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
 
 The flip side of Spotify — a lightweight, single-binary Rust CLI & embedded local web dashboard for continuous friend-circle listening analytics, skip/repeat tracking, profile change logs, and hidden playlist reconstruction. Built on [`librespot`](https://github.com/librespot-org/librespot) and embedded SQLite.
 
@@ -132,18 +138,6 @@ bside overlap --days 30
 # Check profile & playlist changes over time
 bside changes --days 30
 ```
-
-## Roadmap
-
-- [x] Single-binary Rust CLI with zero-cookie `librespot` OAuth and embedded SQLite
-- [x] Full track & podcast metadata, skip/repeat/session tracking, and profile/playlist changelog
-- [x] Hidden playlist reconstruction (`Liked Songs` & private playlists) with URL/M3U8/CSV/JSON export
-- [x] Terminal analytics: streaks, popularity extremes, 7×24 activity heatmap, and friend taste overlap
-- [x] Prebuilt cross-platform releases (Windows, macOS, Linux) with one-line `curl` / PowerShell installers
-- [x] Background service installer (`bside service install` via `launchd`, `systemd --user`, and Windows Task Scheduler)
-- [x] Embedded local Web UI (`bside ui`) built with `shadcn/ui` and served directly from the single binary
-- [x] Lightweight desktop tray app (Tauri) wrapping the local daemon and dashboard
-- [ ] Personal listening history & local Wrapped export alongside friend-circle analytics
 
 ## Notes & Limitations
 

@@ -218,6 +218,28 @@
   animation: audioBar3 1.2s ease-in-out infinite;
 }
 
+@keyframes bsideOrbitCw {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes bsideOrbitCcw {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+.bside-wave-cw {
+  transform-box: view-box;
+  transform-origin: 60px 60px;
+  animation: bsideOrbitCw 26s linear infinite;
+}
+
+.bside-wave-ccw {
+  transform-box: view-box;
+  transform-origin: 60px 60px;
+  animation: bsideOrbitCcw 34s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
