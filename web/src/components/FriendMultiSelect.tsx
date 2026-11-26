@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Search, Users, X } from 'lucide-react';
 import { UserAvatar } from '@/components/UserAvatar';
-import { Badge } from '@/components/ui/badge';
 import { PopoverSurface } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 
@@ -16,7 +15,7 @@ export interface FriendOption {
 
 export interface FriendMultiSelectProps {
   friends: FriendOption[];
-  selectedUsers: string[]; // empty = all friends
+  selectedUsers: string[];
   onChange: (next: string[]) => void;
   className?: string;
 }
@@ -33,7 +32,6 @@ export function FriendMultiSelect({
   const closePopover = useCallback(() => setOpen(false), []);
 
   const selectedSet = useMemo(() => new Set(selectedUsers), [selectedUsers]);
-
   const selfOption = useMemo(() => friends.find((f) => f.is_self) ?? null, [friends]);
 
   const selectedFriends = useMemo(
@@ -55,14 +53,9 @@ export function FriendMultiSelect({
     }
   };
 
-  const selectAll = () => {
-    onChange([]);
-  };
-
+  const selectAll = () => onChange([]);
   const selectOnlyMe = () => {
-    if (selfOption) {
-      onChange([selfOption.user_uri]);
-    }
+    if (selfOption) onChange([selfOption.user_uri]);
   };
 
   const isOnlyMeActive =
@@ -78,8 +71,8 @@ export function FriendMultiSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         className={cn(
-          'inline-flex h-8 items-center gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 text-xs font-medium text-[var(--ink-primary)] shadow-edge transition-all hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]/70 cursor-pointer',
-          open && 'border-[var(--border-accent)] bg-[var(--bg-hover)]',
+          'tactile-press inline-flex h-8 items-center gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--ink-primary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] cursor-pointer',
+          open && 'border-[var(--border-strong)] bg-[var(--bg-elevated)]',
         )}
       >
         {selectedFriends.length === 0 ? (
@@ -92,16 +85,16 @@ export function FriendMultiSelect({
                     name={friend.user_name}
                     imageUrl={friend.image_url}
                     size="xs"
-                    className="ring-1 ring-[var(--bg-panel)]"
+                    className="ring-1 ring-[var(--bg-surface)]"
                   />
                 ))}
               </span>
             ) : (
               <Users className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
             )}
-            <span className="whitespace-nowrap">All Listeners</span>
+            <span className="whitespace-nowrap">Everyone</span>
             {friends.length > 0 && (
-              <span className="rounded-[var(--radius-pill)] bg-[var(--bg-inset)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--ink-muted)]">
+              <span className="tabular-nums text-[11px] text-[var(--ink-muted)]">
                 {friends.length}
               </span>
             )}
@@ -126,11 +119,11 @@ export function FriendMultiSelect({
                   name={friend.user_name}
                   imageUrl={friend.image_url}
                   size="xs"
-                  className="ring-1 ring-[var(--bg-panel)]"
+                  className="ring-1 ring-[var(--bg-surface)]"
                 />
               ))}
             </span>
-            <span className="whitespace-nowrap text-[var(--accent-primary)]">
+            <span className="whitespace-nowrap text-[var(--accent-ember)]">
               {selectedFriends.length} selected
             </span>
           </>
@@ -147,138 +140,132 @@ export function FriendMultiSelect({
         open={open}
         onClose={closePopover}
         anchorRef={containerRef}
-        preferredWidth={288}
+        preferredWidth={280}
         role="listbox"
         aria-multiselectable="true"
         className="flex flex-col overflow-hidden p-2"
       >
-        {/* Quick actions header */}
         <div className="flex shrink-0 items-center justify-between gap-1.5 pb-2">
-            <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={selectAll}
+              className={cn(
+                'rounded-[6px] px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer',
+                selectedUsers.length === 0
+                  ? 'bg-[var(--bg-active)] text-[var(--ink-primary)]'
+                  : 'text-[var(--ink-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
+              )}
+            >
+              Everyone
+            </button>
+            {selfOption && (
               <button
                 type="button"
-                onClick={selectAll}
+                onClick={selectOnlyMe}
                 className={cn(
-                  'rounded-[var(--radius-pill)] border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors cursor-pointer',
-                  selectedUsers.length === 0
-                    ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)] text-[var(--accent-primary)]'
-                    : 'border-[var(--border-subtle)] bg-[var(--bg-inset)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)]',
+                  'rounded-[6px] px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer',
+                  isOnlyMeActive
+                    ? 'bg-[var(--bg-active)] text-[var(--ink-primary)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
                 )}
               >
-                All
+                Only me
               </button>
-              {selfOption && (
+            )}
+          </div>
+          {selectedUsers.length > 0 && (
+            <button
+              type="button"
+              onClick={selectAll}
+              className="inline-flex items-center gap-1 text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] cursor-pointer"
+              title="Clear selection"
+            >
+              <X className="h-3 w-3" />
+              Clear
+            </button>
+          )}
+        </div>
+
+        {friends.length > 6 && (
+          <div className="relative mb-2 shrink-0">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search listeners..."
+              className="h-7 w-full rounded-[6px] border border-[var(--border-subtle)] bg-[var(--bg-inset)] pr-2.5 pl-8 text-xs text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:border-[var(--border-focus)] focus:outline-none"
+            />
+          </div>
+        )}
+
+        <div className="min-h-0 max-h-64 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+          {filteredFriends.length === 0 ? (
+            <div className="py-5 text-center text-xs text-[var(--ink-muted)]">
+              No listeners found
+            </div>
+          ) : (
+            filteredFriends.map((friend) => {
+              const isSelected = selectedSet.has(friend.user_uri);
+              return (
                 <button
+                  key={friend.user_uri}
                   type="button"
-                  onClick={selectOnlyMe}
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => toggleUser(friend.user_uri)}
                   className={cn(
-                    'rounded-[var(--radius-pill)] border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors cursor-pointer',
-                    isOnlyMeActive
-                      ? 'border-[var(--accent-primary)] bg-[var(--accent-soft)] text-[var(--accent-primary)]'
-                      : 'border-[var(--border-subtle)] bg-[var(--bg-inset)] text-[var(--ink-muted)] hover:text-[var(--ink-primary)]',
+                    'flex w-full items-center gap-2.5 rounded-[7px] px-2 py-1.5 text-left transition-colors cursor-pointer',
+                    isSelected
+                      ? 'bg-[var(--bg-active)] text-[var(--ink-primary)]'
+                      : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
                   )}
                 >
-                  Only Me
-                </button>
-              )}
-            </div>
-            {selectedUsers.length > 0 && (
-              <button
-                type="button"
-                onClick={selectAll}
-                className="inline-flex items-center gap-1 text-[10px] text-[var(--ink-muted)] hover:text-[var(--ink-primary)] cursor-pointer"
-                title="Clear selection"
-              >
-                <X className="h-3 w-3" />
-                Reset
-              </button>
-            )}
-          </div>
-
-          {/* Search input when > 6 friends */}
-          {friends.length > 6 && (
-            <div className="relative mb-2 shrink-0">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ink-muted)]" />
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter listeners..."
-                className="h-7 w-full rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] pr-2.5 pl-8 text-xs text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:border-[var(--accent-primary)] focus:outline-none"
-              />
-            </div>
-          )}
-
-          {/* Checkable list */}
-          <div className="min-h-0 flex-1 max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
-            {filteredFriends.length === 0 ? (
-              <div className="py-5 text-center text-xs text-[var(--ink-muted)]">
-                No listeners found
-              </div>
-            ) : (
-              filteredFriends.map((friend) => {
-                const isSelected = selectedSet.has(friend.user_uri);
-                return (
-                  <button
-                    key={friend.user_uri}
-                    type="button"
-                    role="option"
-                    aria-selected={isSelected}
-                    onClick={() => toggleUser(friend.user_uri)}
+                  <span
                     className={cn(
-                      'flex w-full items-center gap-2.5 rounded-[calc(var(--radius-control)*0.75)] px-2 py-1.5 text-left transition-colors cursor-pointer',
+                      'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-colors',
                       isSelected
-                        ? 'bg-[var(--accent-soft)] text-[var(--ink-primary)]'
-                        : 'text-[var(--ink-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
+                        ? 'border-[var(--accent-cta)] bg-[var(--accent-cta)] text-[var(--ink-on-accent)]'
+                        : 'border-[var(--border-strong)] bg-transparent',
                     )}
                   >
-                    <span
-                      className={cn(
-                        'flex h-4 w-4 shrink-0 items-center justify-center rounded-[calc(var(--radius-control)*0.5)] border transition-colors',
-                        isSelected
-                          ? 'border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--ink-on-accent)]'
-                          : 'border-[var(--border-strong)] bg-[var(--bg-inset)]',
-                      )}
-                    >
-                      {isSelected && <Check className="h-3 w-3 stroke-[2.75]" />}
-                    </span>
+                    {isSelected && <Check className="h-2.5 w-2.5 stroke-[3]" />}
+                  </span>
 
-                    <UserAvatar
-                      name={friend.user_name}
-                      imageUrl={friend.image_url}
-                      size="sm"
-                      isLive={friend.is_live}
-                      isSelf={friend.is_self}
-                    />
+                  <UserAvatar
+                    name={friend.user_name}
+                    imageUrl={friend.image_url}
+                    size="sm"
+                    isLive={friend.is_live}
+                    isSelf={friend.is_self}
+                  />
 
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate text-xs font-medium text-[var(--ink-primary)]">
-                          {friend.user_name}
-                        </span>
-                        {friend.is_self && (
-                          <Badge variant="default" className="px-1.5 py-0 text-[9px]">
-                            YOU
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-
-                    {typeof friend.play_count === 'number' && (
-                      <span className="shrink-0 font-mono text-[10px] text-[var(--ink-muted)]">
-                        {friend.play_count.toLocaleString()}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-xs font-medium text-[var(--ink-primary)]">
+                        {friend.user_name}
                       </span>
-                    )}
-                  </button>
-                );
-              })
-            )}
-          </div>
+                      {friend.is_self && (
+                        <span className="text-[10px] text-[var(--ink-muted)]">You</span>
+                      )}
+                    </div>
+                  </div>
 
-          {/* Footer hint */}
-          <div className="mt-2 shrink-0 border-t border-[var(--border-subtle)] pt-2 text-[10px] leading-snug text-[var(--ink-muted)]">
-            View filter only — background collection still tracks everyone.
-          </div>
+                  {typeof friend.play_count === 'number' && (
+                    <span className="shrink-0 tabular-nums text-[11px] text-[var(--ink-muted)]">
+                      {friend.play_count.toLocaleString()}
+                    </span>
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        <div className="mt-2 shrink-0 border-t border-[var(--border-subtle)] pt-2 text-[11px] leading-snug text-[var(--ink-muted)]">
+          Filters current views only. Background tracking stays active.
+        </div>
       </PopoverSurface>
     </div>
   );

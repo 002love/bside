@@ -1,28 +1,17 @@
 <!doctype html>
-<html lang="en" class="dark" data-theme="spotify">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>bside. — Spotify Listening Analytics</title>
-    <script>
-      (function () {
-        try {
-          var saved = localStorage.getItem('bside-theme');
-          document.documentElement.dataset.theme =
-            saved === 'classic' ? 'classic' : 'spotify';
-        } catch (e) {
-          document.documentElement.dataset.theme = 'spotify';
-        }
-      })();
-    </script>
+    <title>bside — Listening Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=IBM+Plex+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
   </head>
-  <body class="bg-[var(--bg-canvas)] text-[var(--ink-primary)] antialiased selection:bg-[var(--accent-soft)] selection:text-[var(--ink-primary)]">
+  <body class="bg-[var(--bg-canvas)] text-[var(--ink-primary)] antialiased selection:bg-[var(--accent-ember-soft)] selection:text-[var(--ink-primary)]">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

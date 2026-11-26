@@ -1,18 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Award, ChevronDown, ChevronUp, ExternalLink, GitCompare, Users } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { EASE_OUT_EXPO, SPRING_SMOOTH, StaggerItem } from '@/components/ui/motion';
 import { EmptyState } from '@/components/EmptyState';
-import { UserAvatar, lookupAvatar } from '@/components/UserAvatar';
 import { InfoTooltip } from '@/components/InfoTooltip';
-import { formatRelativeTime, spotifyUriToUrl } from '@/lib/utils';
+import { UserAvatar, lookupAvatar } from '@/components/UserAvatar';
+import { cn, formatRelativeTime, spotifyUriToUrl } from '@/lib/utils';
 import {
   buildUsersParam,
   type AvatarMap,
@@ -40,61 +33,73 @@ function findUserUri(avatarMap: AvatarMap, name: string): string | null {
   return null;
 }
 
-interface UserPillProps {
-  name: string;
-  avatarMap: AvatarMap;
-  onFilterByUser?: (userUri: string) => void;
-  size?: 'xs' | 'sm';
-  accent?: boolean;
-}
-
-function UserPill({
-  name,
+function ListenerAvatarStack({
+  names,
   avatarMap,
   onFilterByUser,
-  size = 'xs',
-  accent = false,
-}: UserPillProps) {
-  const uri = findUserUri(avatarMap, name);
-  const imageUrl = lookupAvatar(avatarMap, uri, name);
-  const clickable = Boolean(uri && onFilterByUser);
+  maxVisible = 6,
+}: {
+  names: string[];
+  avatarMap: AvatarMap;
+  onFilterByUser?: (userUri: string) => void;
+  maxVisible?: number;
+}) {
+  const visible = names.slice(0, maxVisible);
+  const overflow = names.length - visible.length;
 
-  const inner = (
-    <>
-      <UserAvatar name={name} imageUrl={imageUrl} size={size} />
-      <span className="truncate font-medium">{name}</span>
-    </>
+  return (
+    <div className="flex items-center">
+      <div className="flex items-center -space-x-1.5">
+        {visible.map((name) => {
+          const uri = findUserUri(avatarMap, name);
+          const imageUrl = lookupAvatar(avatarMap, uri, name);
+          const clickable = Boolean(uri && onFilterByUser);
+
+          if (clickable && uri) {
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => onFilterByUser?.(uri)}
+                title={`Filter by ${name}`}
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform hover:z-10 hover:scale-110 cursor-pointer"
+              >
+                <UserAvatar name={name} imageUrl={imageUrl} size="sm" />
+              </button>
+            );
+          }
+
+          return (
+            <span
+              key={name}
+              title={name}
+              className="relative rounded-full ring-2 ring-[#09090b]"
+            >
+              <UserAvatar name={name} imageUrl={imageUrl} size="sm" />
+            </span>
+          );
+        })}
+      </div>
+      {overflow > 0 && (
+        <span className="ml-2 text-[11px] text-[var(--ink-muted)] tabular-nums">
+          +{overflow}
+        </span>
+      )}
+    </div>
   );
-
-  const baseClasses = accent
-    ? 'inline-flex max-w-[160px] items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border-accent)] bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] text-[var(--accent-primary)] transition-colors'
-    : 'inline-flex max-w-[160px] items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2 py-0.5 text-[11px] text-[var(--ink-secondary)] transition-colors';
-
-  if (clickable && uri) {
-    return (
-      <button
-        type="button"
-        onClick={() => onFilterByUser?.(uri)}
-        className={`${baseClasses} hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] cursor-pointer`}
-        title={`Filter by ${name}`}
-      >
-        {inner}
-      </button>
-    );
-  }
-
-  return <span className={baseClasses}>{inner}</span>;
 }
 
-function PairCard({
+function PairRow({
   pair,
   avatarMap,
   onFilterByUser,
+  index = 0,
   muted = false,
 }: {
   pair: FriendPairOverlap;
   avatarMap: AvatarMap;
   onFilterByUser?: (userUri: string) => void;
+  index?: number;
   muted?: boolean;
 }) {
   const scorePct = Math.round(pair.compatibility_score * 100);
@@ -107,78 +112,128 @@ function PairCard({
   const avatarB = lookupAvatar(avatarMap, uriB, pair.friend_b);
 
   return (
-    <div
-      className={
-        muted
-          ? 'rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)]/50 p-3 opacity-75'
-          : 'bside-card-interactive rounded-[var(--radius-control)] bg-[var(--bg-inset)] p-3.5'
-      }
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            disabled={!uriA || !onFilterByUser}
-            onClick={() => uriA && onFilterByUser?.(uriA)}
-            className="inline-flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[var(--ink-primary)] transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-primary)]"
-          >
-            <UserAvatar name={pair.friend_a} imageUrl={avatarA} size="sm" />
-            <span className="truncate">{pair.friend_a}</span>
-          </button>
-          <span className="font-mono text-xs text-[var(--ink-muted)]">&times;</span>
-          <button
-            type="button"
-            disabled={!uriB || !onFilterByUser}
-            onClick={() => uriB && onFilterByUser?.(uriB)}
-            className="inline-flex min-w-0 items-center gap-1.5 text-xs font-semibold text-[var(--ink-primary)] transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-primary)]"
-          >
-            <UserAvatar name={pair.friend_b} imageUrl={avatarB} size="sm" />
-            <span className="truncate">{pair.friend_b}</span>
-          </button>
+    <StaggerItem index={index}>
+      <div
+        className={cn(
+          'border-b border-white/[0.07] py-4 transition-colors',
+          muted ? 'opacity-65' : 'hover:bg-white/[0.03] -mx-3 px-3 rounded-[8px]',
+        )}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            {/* Overlapping pair avatars */}
+            <div className="flex shrink-0 items-center -space-x-2">
+              <button
+                type="button"
+                disabled={!uriA || !onFilterByUser}
+                onClick={() => uriA && onFilterByUser?.(uriA)}
+                title={uriA ? `Filter by ${pair.friend_a}` : pair.friend_a}
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
+              >
+                <UserAvatar name={pair.friend_a} imageUrl={avatarA} size="md" />
+              </button>
+              <button
+                type="button"
+                disabled={!uriB || !onFilterByUser}
+                onClick={() => uriB && onFilterByUser?.(uriB)}
+                title={uriB ? `Filter by ${pair.friend_b}` : pair.friend_b}
+                className="tactile-press relative rounded-full ring-2 ring-[#09090b] transition-transform enabled:cursor-pointer enabled:hover:z-10 enabled:hover:scale-105"
+              >
+                <UserAvatar name={pair.friend_b} imageUrl={avatarB} size="md" />
+              </button>
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[14px] font-medium text-white">
+                <button
+                  type="button"
+                  disabled={!uriA || !onFilterByUser}
+                  onClick={() => uriA && onFilterByUser?.(uriA)}
+                  className="truncate transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-ember)]"
+                >
+                  {pair.friend_a}
+                </button>
+                <span className="text-[var(--ink-muted)]">&amp;</span>
+                <button
+                  type="button"
+                  disabled={!uriB || !onFilterByUser}
+                  onClick={() => uriB && onFilterByUser?.(uriB)}
+                  className="truncate transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-ember)]"
+                >
+                  {pair.friend_b}
+                </button>
+              </div>
+              <div className="mt-0.5 text-xs text-[var(--ink-secondary)] tabular-nums">
+                {pair.shared_artists} shared {pair.shared_artists === 1 ? 'artist' : 'artists'} ·{' '}
+                {pair.shared_tracks} shared {pair.shared_tracks === 1 ? 'track' : 'tracks'}
+              </div>
+            </div>
+          </div>
+
+          <div className="shrink-0 text-right">
+            <div
+              className={cn(
+                'text-2xl font-semibold leading-none tracking-[-0.025em] tabular-nums',
+                muted ? 'text-[var(--ink-muted)]' : 'text-white',
+              )}
+            >
+              {scorePct}%
+            </div>
+            <div className="mt-1 flex items-center justify-end gap-1 text-[11px] text-[var(--ink-muted)]">
+              <span>Match</span>
+              <InfoTooltip
+                iconOnly
+                content="Weighted Jaccard similarity combining shared artists and shared tracks between two listeners."
+              />
+            </div>
+          </div>
         </div>
 
-        <div className="flex shrink-0 items-baseline gap-1 font-display text-2xl font-extrabold leading-none text-[var(--accent-primary)] tabular-nums">
-          <span className={muted ? 'text-[var(--ink-muted)]' : ''}>{scorePct}%</span>
-          <span className="inline-flex items-center gap-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
-            Match
+        <div className="mt-3.5 h-[4px] w-full overflow-hidden rounded-full bg-white/[0.06]">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${muted ? 0 : Math.max(3, scorePct)}%` }}
+            transition={{
+              duration: 0.5,
+              delay: Math.min(index * 0.035, 0.22),
+              ease: EASE_OUT_EXPO,
+            }}
+            className={cn(
+              'h-full rounded-full',
+              muted ? 'bg-[var(--ink-muted)]/40' : 'bg-[var(--accent-ember)]',
+            )}
+          />
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--ink-secondary)] tabular-nums">
+          <span className="inline-flex items-center gap-1">
+            <span>Artists</span>
             <InfoTooltip
               iconOnly
-              content="Weighted Jaccard similarity combining shared artists and shared tracks between two listeners."
+              content="Number of unique artists listened to by both people in the selected timeframe."
             />
+            <span className="font-medium text-white">{artistPct}%</span>
+            <span className="text-[var(--ink-muted)]">
+              ({pair.shared_artists}/{pair.total_union_artists})
+            </span>
+          </span>
+          <span className="text-white/20" aria-hidden="true">
+            ·
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span>Tracks</span>
+            <InfoTooltip
+              iconOnly
+              content="Number of unique tracks listened to by both people in the selected timeframe."
+            />
+            <span className="font-medium text-white">{trackPct}%</span>
+            <span className="text-[var(--ink-muted)]">
+              ({pair.shared_tracks}/{pair.total_union_tracks})
+            </span>
           </span>
         </div>
       </div>
-
-      <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-[var(--radius-pill)] bg-[var(--border-subtle)]">
-        <div
-          className={muted ? 'h-full bg-[var(--ink-muted)]/40' : 'h-full bg-[var(--accent-primary)]'}
-          style={{ width: `${muted ? 0 : Math.max(3, scorePct)}%` }}
-        />
-      </div>
-
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-[var(--ink-muted)]">
-        <span className="inline-flex items-center gap-1">
-          Artists
-          <InfoTooltip
-            iconOnly
-            content="Number of unique artists listened to by both people in the selected timeframe."
-          />
-          :{' '}
-          <strong className="text-[var(--ink-primary)]">{artistPct}%</strong> ({pair.shared_artists}/
-          {pair.total_union_artists})
-        </span>
-        <span className="inline-flex items-center gap-1">
-          Tracks
-          <InfoTooltip
-            iconOnly
-            content="Number of unique tracks listened to by both people in the selected timeframe."
-          />
-          :{' '}
-          <strong className="text-[var(--ink-primary)]">{trackPct}%</strong> ({pair.shared_tracks}/
-          {pair.total_union_tracks})
-        </span>
-      </div>
-    </div>
+    </StaggerItem>
   );
 }
 
@@ -238,7 +293,23 @@ export function OverlapTab({
   }, [report]);
 
   if (loading && !report) {
-    return <Card className="h-48 animate-pulse bg-[var(--bg-panel)]" />;
+    return (
+      <div className="w-full space-y-10 px-6 py-6 lg:px-8">
+        <div>
+          <div className="h-7 w-40 rounded bg-white/[0.07]" />
+          <div className="mt-2 h-3.5 w-60 rounded bg-white/[0.04]" />
+        </div>
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 border-t border-white/[0.07] pt-4 md:grid-cols-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="border-b border-white/[0.07] py-4 space-y-3">
+              <div className="h-5 w-44 rounded bg-white/[0.06]" />
+              <div className="h-1.5 w-full rounded bg-white/[0.05]" />
+              <div className="h-3 w-36 rounded bg-white/[0.04]" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   if (
@@ -248,289 +319,389 @@ export function OverlapTab({
       report.shared_artists.length === 0)
   ) {
     return (
-      <EmptyState
-        title="Not enough friend overlap data yet"
-        description="Taste compatibility and trendsetter leaderboards appear once listens from at least two friends have been logged."
-        command="bside watch"
-      />
+      <div className="w-full space-y-6 px-6 py-6 lg:px-8">
+        <div>
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Taste overlap</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            Shared artists, shared tracks, and trendsetter leaderboards
+          </p>
+        </div>
+        <EmptyState
+          title="Not enough friend overlap data yet"
+          description="Taste compatibility and trendsetter leaderboards appear once listens from at least two friends have been logged."
+          command="bside watch"
+        />
+      </div>
     );
   }
 
   const maxTrendsetter = report.trendsetter_leaderboard[0]?.[1] ?? 1;
 
   return (
-    <div className="space-y-6 animate-fade-up">
-      {/* Pairwise Compatibility & Trendsetter */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <GitCompare className="h-4 w-4 text-[var(--accent-primary)]" />
-              <CardTitle>Friend Compatibility</CardTitle>
-              <InfoTooltip
-                iconOnly
-                content="Weighted Jaccard similarity combining shared artists and shared tracks between two listeners."
-              />
+    <div className="w-full space-y-10 px-6 py-6 lg:px-8">
+      {/* Top Heading + Quiet Summary */}
+      <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-white/[0.07] pb-5">
+        <div>
+          <h1 className="text-2xl font-bold tracking-[-0.03em] text-white">Taste overlap</h1>
+          <p className="mt-1 text-xs text-[var(--ink-secondary)]">
+            Ranked listener compatibility, shared tracks, and who discovered them first
+          </p>
+        </div>
+        <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+          {activePairs.length} {activePairs.length === 1 ? 'match' : 'matches'} ·{' '}
+          {report.shared_tracks.length} shared{' '}
+          {report.shared_tracks.length === 1 ? 'track' : 'tracks'} ·{' '}
+          {report.shared_artists.length} shared{' '}
+          {report.shared_artists.length === 1 ? 'artist' : 'artists'}
+        </span>
+      </header>
+
+      {/* Pair Compatibility & Trendsetter Leaderboard */}
+      <section className="grid grid-cols-1 gap-10 border-b border-white/[0.07] pb-10 lg:grid-cols-3">
+        {/* Friend Compatibility */}
+        <div className="space-y-4 lg:col-span-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <GitCompare className="h-4 w-4 text-[var(--accent-ember)]" />
+                <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
+                  Friend compatibility
+                </h2>
+                <InfoTooltip
+                  iconOnly
+                  content="Weighted Jaccard similarity combining shared artists and shared tracks between two listeners."
+                />
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
+                Ranked taste overlap across shared artists and tracks
+              </p>
             </div>
-            <CardDescription>
-              Ranked taste overlap across shared artists and tracks
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {activePairs.length === 0 ? (
-              <EmptyState
-                title="No overlapping tracks or artists in this timeframe yet"
-                description="Try widening the timeframe or selecting more friends to discover shared music."
-              />
-            ) : (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                {activePairs.map((pair) => (
-                  <PairCard
-                    key={`${pair.friend_a}-${pair.friend_b}`}
-                    pair={pair}
-                    avatarMap={avatarMap}
-                    onFilterByUser={onFilterByUser}
-                  />
-                ))}
-              </div>
+            {activePairs.length > 0 && (
+              <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+                {activePairs.length} {activePairs.length === 1 ? 'pair' : 'pairs'}
+              </span>
             )}
+          </div>
 
-            {zeroPairs.length > 0 && (
-              <div className="pt-1">
-                <button
-                  type="button"
-                  onClick={() => setShowZeroPairs((v) => !v)}
-                  className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-muted)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)] cursor-pointer"
-                >
-                  {showZeroPairs ? (
-                    <>
-                      <ChevronUp className="h-3.5 w-3.5" />
-                      Hide {zeroPairs.length} zero-overlap{' '}
-                      {zeroPairs.length === 1 ? 'pair' : 'pairs'}
-                    </>
-                  ) : (
-                    <>
-                      <ChevronDown className="h-3.5 w-3.5" />
-                      Show {zeroPairs.length} zero-overlap{' '}
-                      {zeroPairs.length === 1 ? 'pair' : 'pairs'}
-                    </>
-                  )}
-                </button>
+          {activePairs.length === 0 ? (
+            <EmptyState
+              title="No overlapping tracks or artists in this timeframe yet"
+              description="Try widening the timeframe or selecting more friends to discover shared music."
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-x-10 border-t border-white/[0.07] md:grid-cols-2">
+              {activePairs.map((pair, idx) => (
+                <PairRow
+                  key={`${pair.friend_a}-${pair.friend_b}`}
+                  pair={pair}
+                  avatarMap={avatarMap}
+                  onFilterByUser={onFilterByUser}
+                  index={idx}
+                />
+              ))}
+            </div>
+          )}
 
-                {showZeroPairs && (
-                  <div className="mt-3 grid grid-cols-1 gap-2.5 md:grid-cols-2">
-                    {zeroPairs.map((pair) => (
-                      <PairCard
-                        key={`${pair.friend_a}-${pair.friend_b}`}
-                        pair={pair}
-                        avatarMap={avatarMap}
-                        onFilterByUser={onFilterByUser}
-                        muted
-                      />
-                    ))}
-                  </div>
+          {zeroPairs.length > 0 && (
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowZeroPairs((v) => !v)}
+                className="tactile-press inline-flex items-center gap-1.5 rounded-full border border-white/[0.1] bg-white/[0.03] px-3.5 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:border-white/[0.18] hover:text-white cursor-pointer"
+              >
+                {showZeroPairs ? (
+                  <>
+                    <ChevronUp className="h-3.5 w-3.5" />
+                    Hide {zeroPairs.length} zero-overlap{' '}
+                    {zeroPairs.length === 1 ? 'pair' : 'pairs'}
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                    Show {zeroPairs.length} zero-overlap{' '}
+                    {zeroPairs.length === 1 ? 'pair' : 'pairs'}
+                  </>
                 )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+              </button>
+
+              <AnimatePresence initial={false}>
+                {showZeroPairs && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={SPRING_SMOOTH}
+                    className="overflow-hidden"
+                  >
+                    <div className="mt-4 grid grid-cols-1 gap-x-10 border-t border-white/[0.07] md:grid-cols-2">
+                      {zeroPairs.map((pair, idx) => (
+                        <PairRow
+                          key={`${pair.friend_a}-${pair.friend_b}`}
+                          pair={pair}
+                          avatarMap={avatarMap}
+                          onFilterByUser={onFilterByUser}
+                          index={idx}
+                          muted
+                        />
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
 
         {/* Trendsetter Leaderboard */}
-        <Card>
-          <CardHeader>
+        <div className="flex flex-col lg:border-l lg:border-white/[0.07] lg:pl-8">
+          <div className="pb-4">
             <div className="flex items-center gap-2">
-              <Award className="h-4 w-4 text-[var(--accent-primary)]" />
-              <CardTitle>Trendsetters</CardTitle>
+              <Award className="h-4 w-4 text-[var(--accent-ember)]" />
+              <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
+                Trendsetters
+              </h2>
               <InfoTooltip
                 iconOnly
                 content="Who listened to shared tracks first before other friends played them."
               />
             </div>
-            <CardDescription>First to spin shared tracks</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+            <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
+              First to spin shared tracks
+            </p>
+          </div>
+
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
             {report.trendsetter_leaderboard.length === 0 ? (
-              <p className="font-mono text-xs text-[var(--ink-muted)]">
+              <p className="py-8 text-xs text-[var(--ink-muted)]">
                 No shared tracks detected yet.
               </p>
             ) : (
               report.trendsetter_leaderboard.map(([name, count], idx) => {
                 const uri = findUserUri(avatarMap, name);
                 const img = lookupAvatar(avatarMap, uri, name);
+                const pct = Math.max(5, (count / maxTrendsetter) * 100);
+
                 return (
-                  <div key={name} className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 font-mono text-xs">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="w-5 shrink-0 text-[10px] text-[var(--ink-muted)]">
-                          {String(idx + 1).padStart(2, '0')}
+                  <StaggerItem key={name} index={idx}>
+                    <div className="-mx-2.5 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
+                            {String(idx + 1).padStart(2, '0')}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={!uri || !onFilterByUser}
+                            onClick={() => uri && onFilterByUser?.(uri)}
+                            className="tactile-press inline-flex min-w-0 items-center gap-2 text-[13px] font-medium text-white transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-ember)]"
+                          >
+                            <UserAvatar name={name} imageUrl={img} size="sm" />
+                            <span className="truncate">{name}</span>
+                          </button>
+                        </div>
+                        <span className="shrink-0 text-xs font-medium text-[var(--ink-secondary)] tabular-nums">
+                          {count} {count === 1 ? 'first' : 'firsts'}
                         </span>
-                        <button
-                          type="button"
-                          disabled={!uri || !onFilterByUser}
-                          onClick={() => uri && onFilterByUser?.(uri)}
-                          className="inline-flex min-w-0 items-center gap-1.5 font-semibold text-[var(--ink-primary)] transition-colors enabled:cursor-pointer enabled:hover:text-[var(--accent-primary)]"
-                        >
-                          <UserAvatar name={name} imageUrl={img} size="sm" />
-                          <span className="truncate">{name}</span>
-                        </button>
                       </div>
-                      <span className="shrink-0 text-[11px] font-semibold text-[var(--accent-primary)] tabular-nums">
-                        {count} {count === 1 ? 'first' : 'firsts'}
-                      </span>
+
+                      <div className="mt-2 ml-7 h-[3px] overflow-hidden rounded-full bg-white/[0.06]">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          transition={{
+                            duration: 0.45,
+                            delay: Math.min(idx * 0.035, 0.2),
+                            ease: EASE_OUT_EXPO,
+                          }}
+                          className="h-full rounded-full bg-[var(--accent-ember)]/85"
+                        />
+                      </div>
                     </div>
-                    <div className="h-1.5 w-full overflow-hidden rounded-[var(--radius-pill)] bg-[var(--border-subtle)]">
-                      <div
-                        className="h-full bg-[var(--accent-muted)]"
-                        style={{ width: `${Math.max(5, (count / maxTrendsetter) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
+                  </StaggerItem>
                 );
               })
             )}
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </div>
+      </section>
 
       {/* Shared Tracks */}
-      <Card>
-        <CardHeader className="border-b border-[var(--border-subtle)]">
-          <CardTitle>Shared Tracks</CardTitle>
-          <CardDescription>
-            Tracks played by multiple friends, highlighting who discovered them first
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          {report.shared_tracks.length === 0 ? (
-            <p className="py-8 text-center font-mono text-xs text-[var(--ink-muted)]">
-              No shared tracks yet.
+      <section className="space-y-4 border-b border-white/[0.07] pb-10">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
+              Shared tracks
+            </h2>
+            <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
+              Tracks played by multiple friends, highlighting who discovered them first
             </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead>Track</TableHead>
-                  <TableHead>First Played By</TableHead>
-                  <TableHead>Listeners</TableHead>
-                  <TableHead className="text-right">Total Plays</TableHead>
-                  <TableHead className="w-10" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {report.shared_tracks.slice(0, 50).map((t) => {
-                  const url = spotifyUriToUrl(t.track_uri);
-                  return (
-                    <TableRow key={t.track_uri}>
-                      <TableCell>
+          </div>
+          {report.shared_tracks.length > 0 && (
+            <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+              {report.shared_tracks.length}{' '}
+              {report.shared_tracks.length === 1 ? 'track' : 'tracks'}
+            </span>
+          )}
+        </div>
+
+        {report.shared_tracks.length === 0 ? (
+          <p className="border-t border-white/[0.07] py-8 text-xs text-[var(--ink-muted)]">
+            No shared tracks yet.
+          </p>
+        ) : (
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
+            {report.shared_tracks.slice(0, 50).map((t, idx) => {
+              const url = spotifyUriToUrl(t.track_uri);
+              const firstUri = findUserUri(avatarMap, t.first_player_name);
+              const firstAvatar = lookupAvatar(avatarMap, firstUri, t.first_player_name);
+
+              return (
+                <StaggerItem key={t.track_uri} index={idx}>
+                  <div className="group -mx-2.5 flex flex-col gap-2.5 rounded-[8px] px-2.5 py-3 transition-colors hover:bg-white/[0.055] sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                    {/* Track & artist */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
                         {url ? (
                           <a
                             href={url}
                             target="_blank"
                             rel="noreferrer"
-                            className="font-medium text-[var(--ink-primary)] transition-colors hover:text-[var(--accent-primary)] hover:underline"
+                            className="truncate text-[13px] font-medium text-white transition-colors hover:text-[var(--accent-ember)]"
                           >
                             {t.track_name}
                           </a>
                         ) : (
-                          <div className="font-medium text-[var(--ink-primary)]">
+                          <span className="truncate text-[13px] font-medium text-white">
                             {t.track_name}
-                          </div>
+                          </span>
                         )}
-                        <div className="text-[11px] text-[var(--ink-muted)]">{t.artist_name}</div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <UserPill
-                            name={t.first_player_name}
-                            avatarMap={avatarMap}
-                            onFilterByUser={onFilterByUser}
-                            accent
-                          />
-                          <span className="font-mono text-[10px] uppercase text-[var(--ink-muted)]">
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--ink-secondary)]">
+                        <span className="truncate">{t.artist_name}</span>
+                        <span className="text-white/20" aria-hidden="true">
+                          ·
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 text-[var(--ink-muted)]">
+                          <span>First by</span>
+                          <button
+                            type="button"
+                            disabled={!firstUri || !onFilterByUser}
+                            onClick={() => firstUri && onFilterByUser?.(firstUri)}
+                            className="tactile-press inline-flex items-center gap-1 font-medium text-[var(--accent-ember)] transition-opacity enabled:cursor-pointer enabled:hover:opacity-85"
+                          >
+                            <UserAvatar
+                              name={t.first_player_name}
+                              imageUrl={firstAvatar}
+                              size="xs"
+                            />
+                            <span>{t.first_player_name}</span>
+                          </button>
+                          <span className="font-mono text-[11px] text-[var(--ink-muted)]">
                             {formatRelativeTime(t.first_played_ms)}
                           </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1.5">
-                          {t.friends_who_played.map((f) => (
-                            <UserPill
-                              key={f}
-                              name={f}
-                              avatarMap={avatarMap}
-                              onFilterByUser={onFilterByUser}
-                            />
-                          ))}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs font-semibold text-[var(--ink-primary)] tabular-nums">
-                        {t.total_plays}
-                      </TableCell>
-                      <TableCell className="text-right">
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Listener avatar stack + plays + external link */}
+                    <div className="flex shrink-0 items-center justify-between gap-4 sm:justify-end">
+                      <ListenerAvatarStack
+                        names={t.friends_who_played}
+                        avatarMap={avatarMap}
+                        onFilterByUser={onFilterByUser}
+                      />
+
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-[54px] text-right text-xs font-medium text-white tabular-nums">
+                          {t.total_plays.toLocaleString()}{' '}
+                          <span className="font-normal text-[var(--ink-muted)]">
+                            {t.total_plays === 1 ? 'play' : 'plays'}
+                          </span>
+                        </span>
+
                         {url && (
                           <a
                             href={url}
                             target="_blank"
                             rel="noreferrer"
                             title="Open in Spotify"
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] border border-transparent text-[var(--ink-muted)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-inset)] hover:text-[var(--accent-primary)]"
+                            aria-label={`Open ${t.track_name} in Spotify`}
+                            className="tactile-press inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[var(--ink-muted)] transition-colors hover:bg-white/[0.08] hover:text-white"
                           >
                             <ExternalLink className="h-3.5 w-3.5" />
                           </a>
                         )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+                      </div>
+                    </div>
+                  </div>
+                </StaggerItem>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Shared Artists */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-[var(--accent-primary)]" />
-            <CardTitle>Shared Artists</CardTitle>
+      <section className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-[var(--ink-muted)]" />
+              <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-white">
+                Shared artists
+              </h2>
+            </div>
+            <p className="mt-0.5 text-xs text-[var(--ink-secondary)]">
+              Artists listened to by two or more friends
+            </p>
           </div>
-          <CardDescription>Artists listened to by two or more friends</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {report.shared_artists.length === 0 ? (
-            <p className="font-mono text-xs text-[var(--ink-muted)]">No shared artists yet.</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
-              {report.shared_artists.slice(0, 30).map(([artist, friends, plays]) => (
-                <div
-                  key={artist}
-                  className="bside-card-interactive flex flex-col justify-between gap-2.5 rounded-[var(--radius-control)] bg-[var(--bg-inset)] p-3"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-xs font-semibold text-[var(--ink-primary)]">
-                      {artist}
+          {report.shared_artists.length > 0 && (
+            <span className="text-xs text-[var(--ink-muted)] tabular-nums">
+              {report.shared_artists.length}{' '}
+              {report.shared_artists.length === 1 ? 'artist' : 'artists'}
+            </span>
+          )}
+        </div>
+
+        {report.shared_artists.length === 0 ? (
+          <p className="border-t border-white/[0.07] py-8 text-xs text-[var(--ink-muted)]">
+            No shared artists yet.
+          </p>
+        ) : (
+          <div className="divide-y divide-white/[0.06] border-t border-white/[0.07]">
+            {report.shared_artists.slice(0, 30).map(([artist, friends, plays], idx) => (
+              <StaggerItem key={artist} index={idx}>
+                <div className="-mx-2.5 flex flex-wrap items-center justify-between gap-3 rounded-[8px] px-2.5 py-2.5 transition-colors hover:bg-white/[0.055]">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="w-5 shrink-0 font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
+                      {String(idx + 1).padStart(2, '0')}
                     </span>
-                    <span className="shrink-0 font-mono text-[10px] uppercase text-[var(--accent-primary)] tabular-nums">
-                      {plays} plays
-                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-medium text-white">
+                        {artist}
+                      </div>
+                      <div className="truncate text-xs text-[var(--ink-muted)]">
+                        {friends.join(' · ')}
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {friends.map((f) => (
-                      <UserPill
-                        key={f}
-                        name={f}
-                        avatarMap={avatarMap}
-                        onFilterByUser={onFilterByUser}
-                      />
-                    ))}
+
+                  <div className="flex shrink-0 items-center gap-4">
+                    <ListenerAvatarStack
+                      names={friends}
+                      avatarMap={avatarMap}
+                      onFilterByUser={onFilterByUser}
+                    />
+                    <span className="min-w-[60px] text-right text-xs font-medium text-[var(--ink-secondary)] tabular-nums">
+                      {plays.toLocaleString()} {plays === 1 ? 'play' : 'plays'}
+                    </span>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              </StaggerItem>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

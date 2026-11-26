@@ -3,22 +3,25 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonStyles = cva(
-  'inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-control)] font-mono text-[11px] font-semibold uppercase tracking-wider transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]/70 disabled:pointer-events-none disabled:opacity-45 cursor-pointer select-none',
+  'tactile-press inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-control)] text-xs font-medium tracking-[-0.01em] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] disabled:pointer-events-none disabled:opacity-45 cursor-pointer select-none',
   {
     variants: {
       variant: {
         primary:
-          'border border-[var(--accent-primary)] bg-[var(--accent-primary)] text-[var(--ink-on-accent)] bside-btn-layered hover:bg-[var(--accent-hover)] hover:border-[var(--accent-hover)]',
+          'border border-transparent bg-[var(--accent-cta)] text-[var(--ink-on-accent)] hover:bg-[var(--accent-cta-hover)]',
+        accent:
+          'border border-[var(--border-accent)] bg-[var(--accent-ember-soft)] text-[var(--accent-ember)] hover:bg-[var(--accent-ember)]/20',
         secondary:
-          'border border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-primary)] shadow-edge hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] active:translate-y-[1px]',
+          'border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--ink-primary)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-elevated)]',
         ghost:
-          'text-[var(--ink-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
+          'text-[var(--ink-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
         outline:
-          'border border-[var(--border-strong)] bg-transparent text-[var(--ink-primary)] hover:border-[var(--accent-primary)] hover:bg-[var(--bg-hover)]',
+          'border border-[var(--border-strong)] bg-transparent text-[var(--ink-primary)] hover:border-[var(--border-focus)] hover:bg-[var(--bg-hover)]',
       },
       size: {
-        sm: 'h-7 px-2.5 text-[11px]',
-        md: 'h-8 px-3 text-[11px]',
+        sm: 'h-7 px-2.5 text-[11.5px]',
+        md: 'h-8 px-3 text-xs',
+        lg: 'h-9 px-4 text-[13px]',
         icon: 'h-8 w-8',
       },
     },
