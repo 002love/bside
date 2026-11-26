@@ -13,16 +13,18 @@ use librespot_protocol::{
     devices::DeviceType,
 };
 use protobuf::{Message, MessageField};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 
 use super::models::{
     FriendActivity, FriendTrack, FriendUser, NamedUri, TrackContext, canonical_spotify_dj_uri,
     classify_context_type, is_spotify_dj_context, normalize_context_uri,
 };
+use super::player::{PlayerSnapshot, cluster_to_player_snapshot};
 
 const PUSHER_CONNECTIONS_URI: &str = "hm://pusher/v1/connections/";
 const CONNECT_CLUSTER_URI: &str = "hm://connect-state/v1/cluster";
 const TIMESTAMP_STABILIZE_WINDOW_MS: i64 = 20_000;
+const PLAYER_BROADCAST_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone)]
 struct OwnProfile {
@@ -34,9 +36,11 @@ struct OwnProfile {
 pub struct OwnPlaybackObserver {
     session: Session,
     latest: Arc<RwLock<Option<FriendActivity>>>,
+    latest_player: Arc<RwLock<PlayerSnapshot>>,
     profile: Arc<RwLock<OwnProfile>>,
     #[allow(dead_code)]
     updates_rx: watch::Receiver<u64>,
+    player_tx: broadcast::Sender<PlayerSnapshot>,
     shutdown_tx: watch::Sender<bool>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -55,22 +59,28 @@ impl OwnPlaybackObserver {
             image_url: user_image_url,
         }));
         let latest = Arc::new(RwLock::new(None));
+        let latest_player = Arc::new(RwLock::new(PlayerSnapshot::default()));
         let (updates_tx, updates_rx) = watch::channel(0u64);
+        let (player_tx, _) = broadcast::channel(PLAYER_BROADCAST_CAPACITY);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let task = tokio::spawn(run_observer_loop(
             session.clone(),
             Arc::clone(&latest),
+            Arc::clone(&latest_player),
             Arc::clone(&profile),
             updates_tx,
+            player_tx.clone(),
             shutdown_rx,
         ));
 
         Self {
             session,
             latest,
+            latest_player,
             profile,
             updates_rx,
+            player_tx,
             shutdown_tx,
             task: Mutex::new(Some(task)),
         }
@@ -83,9 +93,25 @@ impl OwnPlaybackObserver {
             .and_then(|guard| guard.clone())
     }
 
+    pub fn latest_player(&self) -> PlayerSnapshot {
+        self.latest_player
+            .read()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
     #[allow(dead_code)]
     pub fn subscribe_updates(&self) -> watch::Receiver<u64> {
         self.updates_rx.clone()
+    }
+
+    pub fn subscribe_player(&self) -> broadcast::Receiver<PlayerSnapshot> {
+        self.player_tx.subscribe()
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
     }
 
     pub fn update_profile(&self, display_name: String, image_url: Option<String>) {
@@ -110,6 +136,11 @@ impl OwnPlaybackObserver {
 
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
+        let disconnected = PlayerSnapshot::default();
+        if let Ok(mut guard) = self.latest_player.write() {
+            *guard = disconnected.clone();
+        }
+        let _ = self.player_tx.send(disconnected);
         let _ = self.session.spclient().delete_connect_state_request().await;
         self.session.dealer().close().await;
         if let Some(handle) = self.task.lock().await.take() {
@@ -172,15 +203,25 @@ fn build_put_state_request(
 
 fn apply_cluster_update(
     cluster: &Cluster,
+    self_device_id: &str,
     latest: &Arc<RwLock<Option<FriendActivity>>>,
+    latest_player: &Arc<RwLock<PlayerSnapshot>>,
     profile: &Arc<RwLock<OwnProfile>>,
     updates_tx: &watch::Sender<u64>,
+    player_tx: &broadcast::Sender<PlayerSnapshot>,
 ) {
+    let now_ms = Utc::now().timestamp_millis();
+
+    let player_snap = cluster_to_player_snapshot(cluster, self_device_id, now_ms);
+    if let Ok(mut guard) = latest_player.write() {
+        *guard = player_snap.clone();
+    }
+    let _ = player_tx.send(player_snap);
+
     let prof = match profile.read() {
         Ok(guard) => guard.clone(),
         Err(_) => return,
     };
-    let now_ms = Utc::now().timestamp_millis();
 
     let updated = if let Ok(mut guard) = latest.write() {
         let next = cluster_to_activity(
@@ -206,8 +247,10 @@ fn apply_cluster_update(
 async fn run_observer_loop(
     session: Session,
     latest: Arc<RwLock<Option<FriendActivity>>>,
+    latest_player: Arc<RwLock<PlayerSnapshot>>,
     profile: Arc<RwLock<OwnProfile>>,
     updates_tx: watch::Sender<u64>,
+    player_tx: broadcast::Sender<PlayerSnapshot>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let mut conn_id_stream = match session
@@ -266,7 +309,15 @@ async fn run_observer_loop(
                         match session.spclient().put_connect_state_request(&req).await {
                             Ok(bytes) => match Cluster::parse_from_bytes(&bytes) {
                                 Ok(cluster) => {
-                                    apply_cluster_update(&cluster, &latest, &profile, &updates_tx);
+                                    apply_cluster_update(
+                                        &cluster,
+                                        session.device_id(),
+                                        &latest,
+                                        &latest_player,
+                                        &profile,
+                                        &updates_tx,
+                                        &player_tx,
+                                    );
                                 }
                                 Err(e) => {
                                     eprintln!("[warn] Own playback observer failed to parse initial cluster: {e}");
@@ -287,7 +338,15 @@ async fn run_observer_loop(
                 match maybe_cluster {
                     Some(Ok(update)) => {
                         if let Some(cluster) = update.cluster.as_ref() {
-                            apply_cluster_update(cluster, &latest, &profile, &updates_tx);
+                            apply_cluster_update(
+                                cluster,
+                                session.device_id(),
+                                &latest,
+                                &latest_player,
+                                &profile,
+                                &updates_tx,
+                                &player_tx,
+                            );
                         }
                     }
                     Some(Err(e)) => {

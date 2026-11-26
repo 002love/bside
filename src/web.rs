@@ -13,9 +13,10 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use chrono::Utc;
 use futures_util::stream::{self, Stream, StreamExt};
+use librespot_core::session::Session;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast, watch};
@@ -26,10 +27,17 @@ use crate::db::{
     ContextSummary, Database, FriendSummary, ListenRecord, OverlapReport, ProfileEvent,
     RebuiltTrack, StatsSummary, StoredProfile, spotify_uri_to_url,
 };
+use crate::listen_along::{
+    BoxFuture, ListenAlongError, ListenAlongErrorCode, ListenAlongManager, ListenAlongPlayCommand,
+    ListenAlongPlayerAdapter, ListenAlongState, LiveTargetObservation, OwnPlayerObservation,
+    ResyncListenAlongRequest, StartListenAlongRequest, StopListenAlongRequest,
+    UpdateListenAlongSettingsRequest, normalize_target_user_uri,
+};
 use crate::spotify::{
-    ActivityEvent, FriendActivity, NameCache, OwnPlaybackObserver, StreamConfig,
-    TransportPreference, connect_cached, enrich_activity, fetch_user_profile, login_oauth,
-    open_cache, spawn_activity_stream,
+    ActivityEvent, FriendActivity, NameCache, OwnPlaybackObserver, PlayRequest, PlayerDevice,
+    PlayerError, PlayerErrorCode, PlayerSnapshot, RepeatMode, StreamConfig, TransportPreference,
+    connect_cached, enrich_activity, fetch_user_profile, login_oauth, open_cache,
+    player as spotify_player, spawn_activity_stream_with_targets,
 };
 
 const MIN_POLL_INTERVAL_SECS: u64 = 10;
@@ -308,6 +316,377 @@ impl LiveHub {
             _ => self.snapshot().await,
         }
     }
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+}
+
+pub struct PlayerHub {
+    latest: RwLock<PlayerSnapshot>,
+    tx: broadcast::Sender<PlayerSnapshot>,
+    session: RwLock<Option<Session>>,
+    offline: bool,
+}
+
+impl PlayerHub {
+    pub fn new(offline: bool) -> Self {
+        let (tx, _rx) = broadcast::channel(32);
+        Self {
+            latest: RwLock::new(PlayerSnapshot::default()),
+            tx,
+            session: RwLock::new(None),
+            offline,
+        }
+    }
+
+    pub fn is_offline(&self) -> bool {
+        self.offline
+    }
+
+    pub async fn snapshot(&self) -> PlayerSnapshot {
+        self.latest.read().await.clone()
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<PlayerSnapshot> {
+        self.tx.subscribe()
+    }
+
+    pub async fn publish(&self, snapshot: PlayerSnapshot) {
+        {
+            let mut guard = self.latest.write().await;
+            *guard = snapshot.clone();
+        }
+        let _ = self.tx.send(snapshot);
+    }
+
+    pub async fn set_session(&self, session: Option<Session>) {
+        let cleared = session.is_none();
+        {
+            let mut guard = self.session.write().await;
+            *guard = session;
+        }
+        if cleared {
+            self.publish(PlayerSnapshot::default()).await;
+        }
+    }
+
+    async fn resolve_session_only(&self) -> Result<Session, PlayerError> {
+        if self.offline {
+            return Err(PlayerError::offline(
+                "Playback control is unavailable in offline archive mode",
+            ));
+        }
+        let guard = self.session.read().await;
+        match guard.as_ref() {
+            Some(session) if !session.is_invalid() => Ok(session.clone()),
+            _ => Err(PlayerError::unauthenticated(
+                "Connect your Spotify account to control playback",
+            )),
+        }
+    }
+
+    async fn resolve_session_and_device(
+        &self,
+        requested_device_id: Option<&str>,
+    ) -> Result<(Session, String), PlayerError> {
+        let session = self.resolve_session_only().await?;
+        let snap = self.snapshot().await;
+        let device_id = snap
+            .resolve_target_device_id(requested_device_id)
+            .ok_or_else(|| {
+                PlayerError::no_active_device(
+                    "No active Spotify device found. Open Spotify on any device and try again.",
+                )
+            })?;
+        Ok((session, device_id))
+    }
+
+    pub async fn play(&self, req: PlayRequest) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let (session, device_id) = self
+            .resolve_session_and_device(req.device_id.as_deref())
+            .await?;
+        spotify_player::play_with_context_fallback(&session, &device_id, &req).await?;
+        Ok((device_id, self.snapshot().await))
+    }
+
+    pub async fn pause(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::pause(&session, &target_device_id).await?;
+        Ok((target_device_id, self.snapshot().await))
+    }
+
+    pub async fn resume(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::resume(&session, &target_device_id).await?;
+        Ok((target_device_id, self.snapshot().await))
+    }
+
+    pub async fn toggle(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<(&'static str, String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        let snap = self.snapshot().await;
+        let action = if snap.is_playing && !snap.is_paused {
+            spotify_player::pause(&session, &target_device_id).await?;
+            "paused"
+        } else {
+            spotify_player::resume(&session, &target_device_id).await?;
+            "resumed"
+        };
+        Ok((action, target_device_id, self.snapshot().await))
+    }
+
+    pub async fn next(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::skip_next(&session, &target_device_id).await?;
+        Ok((target_device_id, self.snapshot().await))
+    }
+
+    pub async fn previous(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::skip_prev(&session, &target_device_id).await?;
+        Ok((target_device_id, self.snapshot().await))
+    }
+
+    pub async fn seek(
+        &self,
+        position_ms: i64,
+        device_id: Option<&str>,
+    ) -> Result<(i64, String, PlayerSnapshot), PlayerError> {
+        if position_ms < 0 {
+            return Err(PlayerError::invalid_input(
+                "position_ms must be non-negative",
+            ));
+        }
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        let snap = self.snapshot().await;
+        let clamped = if snap.duration_ms > 0 {
+            position_ms.min(snap.duration_ms)
+        } else {
+            position_ms
+        };
+        spotify_player::seek(&session, &target_device_id, clamped).await?;
+        Ok((clamped, target_device_id, self.snapshot().await))
+    }
+
+    pub async fn set_volume(
+        &self,
+        volume_percent: u16,
+        device_id: Option<&str>,
+    ) -> Result<(u8, String, PlayerSnapshot), PlayerError> {
+        if volume_percent > 100 {
+            return Err(PlayerError::invalid_input(
+                "volume_percent must be between 0 and 100",
+            ));
+        }
+        let pct = volume_percent as u8;
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::set_volume(&session, &target_device_id, pct).await?;
+        Ok((pct, target_device_id, self.snapshot().await))
+    }
+
+    pub async fn set_shuffle(
+        &self,
+        enabled: bool,
+        device_id: Option<&str>,
+    ) -> Result<(bool, String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::set_shuffle(&session, &target_device_id, enabled).await?;
+        Ok((enabled, target_device_id, self.snapshot().await))
+    }
+
+    pub async fn set_repeat(
+        &self,
+        mode: RepeatMode,
+        device_id: Option<&str>,
+    ) -> Result<(RepeatMode, String, PlayerSnapshot), PlayerError> {
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::set_repeat(&session, &target_device_id, mode).await?;
+        Ok((mode, target_device_id, self.snapshot().await))
+    }
+
+    pub async fn add_to_queue(
+        &self,
+        track_uri: &str,
+        device_id: Option<&str>,
+    ) -> Result<(String, String, PlayerSnapshot), PlayerError> {
+        let uri = track_uri.trim();
+        if uri.is_empty() {
+            return Err(PlayerError::invalid_input("track_uri must not be empty"));
+        }
+        let (session, target_device_id) = self.resolve_session_and_device(device_id).await?;
+        spotify_player::add_to_queue(&session, &target_device_id, uri).await?;
+        Ok((uri.to_string(), target_device_id, self.snapshot().await))
+    }
+
+    pub async fn transfer(
+        &self,
+        device_id: &str,
+        play: Option<bool>,
+    ) -> Result<(String, PlayerSnapshot), PlayerError> {
+        let target_device_id = device_id.trim();
+        if target_device_id.is_empty() {
+            return Err(PlayerError::invalid_input("device_id must not be empty"));
+        }
+        let session = self.resolve_session_only().await?;
+        spotify_player::transfer(&session, target_device_id, play).await?;
+        Ok((target_device_id.to_string(), self.snapshot().await))
+    }
+}
+
+fn player_error_to_listen_along_error(err: PlayerError) -> ListenAlongError {
+    let code = match err.code {
+        PlayerErrorCode::NoActiveDevice => ListenAlongErrorCode::NoActiveDevice,
+        PlayerErrorCode::Unauthenticated => ListenAlongErrorCode::Unauthenticated,
+        PlayerErrorCode::Offline => ListenAlongErrorCode::Offline,
+        PlayerErrorCode::InvalidInput => ListenAlongErrorCode::InvalidInput,
+        PlayerErrorCode::CommandFailed => ListenAlongErrorCode::CommandFailed,
+    };
+    ListenAlongError::new(code, err.message)
+}
+
+fn player_snapshot_to_observation(snap: &PlayerSnapshot, now_ms: i64) -> OwnPlayerObservation {
+    let has_playable_device = snap.active_device_id.is_some()
+        || snap
+            .devices
+            .iter()
+            .any(|d| !d.is_offline && !d.is_restricted);
+    OwnPlayerObservation {
+        connected: snap.connected,
+        active_device_id: snap.active_device_id.clone(),
+        has_playable_device,
+        is_playing: snap.is_playing,
+        is_paused: snap.is_paused,
+        track_uri: snap.track.as_ref().map(|t| t.uri.clone()),
+        estimated_position_ms: snap.estimated_position_ms(now_ms),
+    }
+}
+
+fn non_empty_string(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn live_friend_to_observation(item: &LiveFriendItem) -> LiveTargetObservation {
+    LiveTargetObservation {
+        user_uri: item.user_uri.clone(),
+        user_name: item.user_name.clone(),
+        user_image_url: item.user_image_url.clone(),
+        playing: item.playing,
+        timestamp_ms: item.timestamp_ms,
+        track_uri: non_empty_string(&item.track_uri),
+        track_name: non_empty_string(&item.track_name),
+        all_artists: non_empty_string(&item.all_artists),
+        album_name: item.album_name.clone(),
+        cover_url: item.cover_url.clone(),
+        duration_ms: item.duration_ms,
+        context_uri: item.context_uri.clone(),
+        context_name: item.context_name.clone(),
+        context_type: item.context_type.clone(),
+        context_is_private: item.context_is_private,
+        spotify_url: non_empty_string(&item.spotify_url),
+    }
+}
+
+struct HubPlayerAdapter {
+    player: Arc<PlayerHub>,
+}
+
+impl HubPlayerAdapter {
+    fn new(player: Arc<PlayerHub>) -> Self {
+        Self { player }
+    }
+}
+
+impl ListenAlongPlayerAdapter for HubPlayerAdapter {
+    fn play(
+        &self,
+        cmd: ListenAlongPlayCommand,
+    ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+        Box::pin(async move {
+            let req = PlayRequest {
+                track_uri: Some(cmd.track_uri),
+                context_uri: cmd.context_uri,
+                position_ms: Some(cmd.position_ms),
+                skip_to_uri: None,
+                skip_to_index: None,
+                initially_paused: Some(false),
+                device_id: cmd.device_id,
+            };
+            self.player
+                .play(req)
+                .await
+                .map(|(device_id, _)| device_id)
+                .map_err(player_error_to_listen_along_error)
+        })
+    }
+
+    fn pause(
+        &self,
+        device_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+        let device = device_id.map(str::to_string);
+        Box::pin(async move {
+            self.player
+                .pause(device.as_deref())
+                .await
+                .map(|(dev_id, _)| dev_id)
+                .map_err(player_error_to_listen_along_error)
+        })
+    }
+
+    fn resume(
+        &self,
+        device_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+        let device = device_id.map(str::to_string);
+        Box::pin(async move {
+            self.player
+                .resume(device.as_deref())
+                .await
+                .map(|(dev_id, _)| dev_id)
+                .map_err(player_error_to_listen_along_error)
+        })
+    }
+
+    fn seek(
+        &self,
+        position_ms: i64,
+        device_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+        let device = device_id.map(str::to_string);
+        Box::pin(async move {
+            self.player
+                .seek(position_ms, device.as_deref())
+                .await
+                .map(|(_, dev_id, _)| dev_id)
+                .map_err(player_error_to_listen_along_error)
+        })
+    }
+
+    fn current_observation(&self, now_ms: i64) -> BoxFuture<'_, OwnPlayerObservation> {
+        Box::pin(async move {
+            let snap = self.player.snapshot().await;
+            player_snapshot_to_observation(&snap, now_ms)
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -315,6 +694,8 @@ struct AppState {
     db_path: Arc<PathBuf>,
     cache_dir: Arc<PathBuf>,
     live: Arc<LiveHub>,
+    player: Arc<PlayerHub>,
+    listen_along: Arc<ListenAlongManager>,
     account_profile: Arc<RwLock<Option<AccountProfile>>>,
     auth_in_progress: Arc<AtomicBool>,
 }
@@ -322,6 +703,8 @@ struct AppState {
 #[derive(Debug, Serialize)]
 struct ApiError {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
 }
 
 fn internal_error(err: anyhow::Error) -> (StatusCode, Json<ApiError>) {
@@ -329,6 +712,45 @@ fn internal_error(err: anyhow::Error) -> (StatusCode, Json<ApiError>) {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ApiError {
             error: format!("{err:#}"),
+            code: None,
+        }),
+    )
+}
+
+fn player_error_response(err: PlayerError) -> (StatusCode, Json<ApiError>) {
+    let status = match err.code {
+        PlayerErrorCode::InvalidInput => StatusCode::BAD_REQUEST,
+        PlayerErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        PlayerErrorCode::NoActiveDevice => StatusCode::CONFLICT,
+        PlayerErrorCode::Offline => StatusCode::SERVICE_UNAVAILABLE,
+        PlayerErrorCode::CommandFailed => StatusCode::BAD_GATEWAY,
+    };
+    (
+        status,
+        Json(ApiError {
+            error: err.message,
+            code: Some(err.code.as_str().to_string()),
+        }),
+    )
+}
+
+fn listen_along_error_response(err: ListenAlongError) -> (StatusCode, Json<ApiError>) {
+    let status = match err.code {
+        ListenAlongErrorCode::InvalidInput | ListenAlongErrorCode::SelfTarget => {
+            StatusCode::BAD_REQUEST
+        }
+        ListenAlongErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        ListenAlongErrorCode::NoActiveDevice | ListenAlongErrorCode::NotActive => {
+            StatusCode::CONFLICT
+        }
+        ListenAlongErrorCode::Offline => StatusCode::SERVICE_UNAVAILABLE,
+        ListenAlongErrorCode::CommandFailed => StatusCode::BAD_GATEWAY,
+    };
+    (
+        status,
+        Json(ApiError {
+            error: err.message,
+            code: Some(err.code.as_str().to_string()),
         }),
     )
 }
@@ -929,6 +1351,8 @@ async fn api_auth_logout(
         .map_err(|e| internal_error(anyhow::anyhow!("Logout task panicked: {e}")))?
         .map_err(internal_error)?;
 
+    state.listen_along.handle_disconnect_or_logout().await;
+    state.player.set_session(None).await;
     state.live.set_account_profile(None).await;
     let prev = state.live.snapshot().await;
     state
@@ -954,11 +1378,512 @@ async fn api_auth_logout(
     }))
 }
 
+#[derive(Debug, Serialize)]
+struct PlayerDevicesResponse {
+    active_device_id: Option<String>,
+    devices: Vec<PlayerDevice>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct DeviceCommandBody {
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeekCommandBody {
+    position_ms: i64,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VolumeCommandBody {
+    volume_percent: u16,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShuffleCommandBody {
+    enabled: bool,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepeatCommandBody {
+    mode: RepeatMode,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueCommandBody {
+    track_uri: String,
+    device_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferCommandBody {
+    device_id: String,
+    play: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlayerCommandResponse {
+    ok: bool,
+    device_id: String,
+    player: PlayerSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume_percent: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<RepeatMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track_uri: Option<String>,
+}
+
+fn player_snapshot_to_sse_event(snapshot: &PlayerSnapshot) -> Event {
+    let data = serde_json::to_string(snapshot).unwrap_or_else(|_| "{}".to_string());
+    Event::default().event("player").data(data)
+}
+
+fn listen_along_to_sse_event(state: &ListenAlongState) -> Event {
+    let data = serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string());
+    Event::default().event("listen_along").data(data)
+}
+
+async fn api_player_state(State(state): State<AppState>) -> Json<PlayerSnapshot> {
+    Json(state.player.snapshot().await)
+}
+
+async fn api_player_stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let rx = state.player.subscribe();
+    let initial = state.player.snapshot().await;
+
+    let initial_stream = stream::once(async move {
+        Ok::<Event, Infallible>(player_snapshot_to_sse_event(&initial))
+    });
+
+    let updates_stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(snapshot) => Some(Ok::<Event, Infallible>(player_snapshot_to_sse_event(
+                &snapshot,
+            ))),
+            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+        }
+    });
+
+    Sse::new(initial_stream.chain(updates_stream)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(SSE_KEEP_ALIVE_SECS))
+            .text("keep-alive"),
+    )
+}
+
+async fn api_player_devices(State(state): State<AppState>) -> Json<PlayerDevicesResponse> {
+    let snap = state.player.snapshot().await;
+    Json(PlayerDevicesResponse {
+        active_device_id: snap.active_device_id,
+        devices: snap.devices,
+    })
+}
+
+async fn api_player_play(
+    State(state): State<AppState>,
+    body: Option<Json<PlayRequest>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let req = body.map(|Json(v)| v).unwrap_or_default();
+    let (device_id, player) = state.player.play(req).await.map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_pause(
+    State(state): State<AppState>,
+    body: Option<Json<DeviceCommandBody>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let device = body.and_then(|Json(v)| v.device_id);
+    let (device_id, player) = state
+        .player
+        .pause(device.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: Some("paused"),
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_resume(
+    State(state): State<AppState>,
+    body: Option<Json<DeviceCommandBody>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let device = body.and_then(|Json(v)| v.device_id);
+    let (device_id, player) = state
+        .player
+        .resume(device.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: Some("resumed"),
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_toggle(
+    State(state): State<AppState>,
+    body: Option<Json<DeviceCommandBody>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let device = body.and_then(|Json(v)| v.device_id);
+    let (action, device_id, player) = state
+        .player
+        .toggle(device.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: Some(action),
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_next(
+    State(state): State<AppState>,
+    body: Option<Json<DeviceCommandBody>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let device = body.and_then(|Json(v)| v.device_id);
+    let (device_id, player) = state
+        .player
+        .next(device.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_previous(
+    State(state): State<AppState>,
+    body: Option<Json<DeviceCommandBody>>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let device = body.and_then(|Json(v)| v.device_id);
+    let (device_id, player) = state
+        .player
+        .previous(device.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_seek(
+    State(state): State<AppState>,
+    Json(body): Json<SeekCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (position_ms, device_id, player) = state
+        .player
+        .seek(body.position_ms, body.device_id.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: Some(position_ms),
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_volume(
+    State(state): State<AppState>,
+    Json(body): Json<VolumeCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (volume_percent, device_id, player) = state
+        .player
+        .set_volume(body.volume_percent, body.device_id.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: Some(volume_percent),
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_shuffle(
+    State(state): State<AppState>,
+    Json(body): Json<ShuffleCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (enabled, device_id, player) = state
+        .player
+        .set_shuffle(body.enabled, body.device_id.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: Some(enabled),
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_player_repeat(
+    State(state): State<AppState>,
+    Json(body): Json<RepeatCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (mode, device_id, player) = state
+        .player
+        .set_repeat(body.mode, body.device_id.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: Some(mode),
+        track_uri: None,
+    }))
+}
+
+async fn api_player_queue(
+    State(state): State<AppState>,
+    Json(body): Json<QueueCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (track_uri, device_id, player) = state
+        .player
+        .add_to_queue(&body.track_uri, body.device_id.as_deref())
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: Some(track_uri),
+    }))
+}
+
+async fn api_player_transfer(
+    State(state): State<AppState>,
+    Json(body): Json<TransferCommandBody>,
+) -> Result<Json<PlayerCommandResponse>, (StatusCode, Json<ApiError>)> {
+    let (device_id, player) = state
+        .player
+        .transfer(&body.device_id, body.play)
+        .await
+        .map_err(player_error_response)?;
+    Ok(Json(PlayerCommandResponse {
+        ok: true,
+        device_id,
+        player,
+        action: None,
+        position_ms: None,
+        volume_percent: None,
+        enabled: None,
+        mode: None,
+        track_uri: None,
+    }))
+}
+
+async fn api_listen_along_state(State(state): State<AppState>) -> Json<ListenAlongState> {
+    Json(state.listen_along.state().await)
+}
+
+async fn api_listen_along_stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = std::result::Result<Event, Infallible>>> {
+    let rx = state.listen_along.subscribe();
+    let initial = state.listen_along.state().await;
+
+    let initial_stream = stream::once(async move {
+        Ok::<Event, Infallible>(listen_along_to_sse_event(&initial))
+    });
+
+    let updates_stream = BroadcastStream::new(rx).filter_map(|item| async move {
+        match item {
+            Ok(la_state) => Some(Ok::<Event, Infallible>(listen_along_to_sse_event(
+                &la_state,
+            ))),
+            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+        }
+    });
+
+    Sse::new(initial_stream.chain(updates_stream)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(SSE_KEEP_ALIVE_SECS))
+            .text("keep-alive"),
+    )
+}
+
+async fn api_listen_along_start(
+    State(state): State<AppState>,
+    Json(req): Json<StartListenAlongRequest>,
+) -> Result<Json<ListenAlongState>, (StatusCode, Json<ApiError>)> {
+    let live_snap = state.live.snapshot().await;
+    let offline = state.live.is_offline() || state.player.is_offline();
+    let cache_dir = (*state.cache_dir).clone();
+    let has_creds = tokio::task::spawn_blocking(move || has_cached_credentials(&cache_dir))
+        .await
+        .unwrap_or(false);
+    let authenticated = has_creds
+        || (live_snap.connected && live_snap.status == "live")
+        || state.player.snapshot().await.connected;
+
+    let own_user_uri = state
+        .account_profile
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.user_uri.clone())
+        .or_else(|| live_snap.account_uri.clone());
+
+    let current_target = normalize_target_user_uri(&req.user_uri)
+        .ok()
+        .and_then(|normalized| {
+            live_snap
+                .friends
+                .iter()
+                .find(|f| f.user_uri.eq_ignore_ascii_case(&normalized))
+                .map(live_friend_to_observation)
+        });
+
+    let la_state = state
+        .listen_along
+        .start(
+            req,
+            own_user_uri.as_deref(),
+            current_target,
+            offline,
+            authenticated,
+        )
+        .await
+        .map_err(listen_along_error_response)?;
+
+    Ok(Json(la_state))
+}
+
+async fn api_listen_along_stop(
+    State(state): State<AppState>,
+    body: Option<Json<StopListenAlongRequest>>,
+) -> Json<ListenAlongState> {
+    let req = body.map(|Json(v)| v).unwrap_or_default();
+    Json(state.listen_along.stop(req).await)
+}
+
+async fn api_listen_along_resync(
+    State(state): State<AppState>,
+    body: Option<Json<ResyncListenAlongRequest>>,
+) -> Result<Json<ListenAlongState>, (StatusCode, Json<ApiError>)> {
+    let req = body.map(|Json(v)| v).unwrap_or_default();
+    let current_la = state.listen_along.state().await;
+    let live_snap = state.live.snapshot().await;
+    let current_target = current_la.target.as_ref().and_then(|t| {
+        live_snap
+            .friends
+            .iter()
+            .find(|f| f.user_uri.eq_ignore_ascii_case(&t.user_uri))
+            .map(live_friend_to_observation)
+    });
+
+    let la_state = state
+        .listen_along
+        .resync(req, current_target)
+        .await
+        .map_err(listen_along_error_response)?;
+    Ok(Json(la_state))
+}
+
+async fn api_listen_along_settings(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateListenAlongSettingsRequest>,
+) -> Result<Json<ListenAlongState>, (StatusCode, Json<ApiError>)> {
+    let la_state = state
+        .listen_along
+        .update_settings(req)
+        .await
+        .map_err(listen_along_error_response)?;
+    Ok(Json(la_state))
+}
+
 async fn api_not_found() -> (StatusCode, Json<ApiError>) {
     (
         StatusCode::NOT_FOUND,
         Json(ApiError {
             error: "API endpoint not found".to_string(),
+            code: None,
         }),
     )
 }
@@ -1372,6 +2297,21 @@ async fn wait_own_update(rx: &mut Option<watch::Receiver<u64>>) -> bool {
     }
 }
 
+async fn wait_own_player_update(
+    rx: &mut Option<broadcast::Receiver<PlayerSnapshot>>,
+) -> Option<PlayerSnapshot> {
+    match rx {
+        Some(r) => loop {
+            match r.recv().await {
+                Ok(snap) => return Some(snap),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
 async fn prepare_own_activity(
     own_observer: Option<&OwnPlaybackObserver>,
     own_session: Option<&librespot_core::session::Session>,
@@ -1404,6 +2344,8 @@ async fn prepare_own_activity(
 #[allow(clippy::too_many_arguments)]
 fn spawn_live_stream(
     live: Arc<LiveHub>,
+    player_hub: Arc<PlayerHub>,
+    listen_along: Arc<ListenAlongManager>,
     cache_dir: PathBuf,
     db_path: PathBuf,
     poll_interval_secs: u64,
@@ -1423,6 +2365,8 @@ fn spawn_live_stream(
 
         loop {
             if *shutdown_rx.borrow() {
+                listen_along.handle_disconnect_or_logout().await;
+                player_hub.set_session(None).await;
                 close_open_sessions(&db_path, &mut active_plays).await;
                 return;
             }
@@ -1439,6 +2383,8 @@ fn spawn_live_stream(
                     .unwrap_or(false);
 
             if !has_credentials {
+                listen_along.handle_disconnect_or_logout().await;
+                player_hub.set_session(None).await;
                 close_open_sessions(&db_path, &mut active_plays).await;
                 active_plays.clear();
                 live.set_account_profile(None).await;
@@ -1481,6 +2427,7 @@ fn spawn_live_stream(
                     None
                 }
             };
+            player_hub.set_session(own_session.clone()).await;
 
             let mut current_account: Option<String> = own_session
                 .as_ref()
@@ -1571,6 +2518,7 @@ fn spawn_live_stream(
 
             let mut own_observer: Option<OwnPlaybackObserver> = None;
             let mut own_updates_rx: Option<watch::Receiver<u64>> = None;
+            let mut own_player_rx: Option<broadcast::Receiver<PlayerSnapshot>> = None;
             if let Some(session) = own_session.as_ref() {
                 let (own_name, own_image) = match &account_profile {
                     Some(p) => (p.display_name.clone(), p.image_url.clone()),
@@ -1578,6 +2526,8 @@ fn spawn_live_stream(
                 };
                 let obs = OwnPlaybackObserver::spawn(session.clone(), own_name, own_image);
                 own_updates_rx = Some(obs.subscribe_updates());
+                own_player_rx = Some(obs.subscribe_player());
+                player_hub.publish(obs.latest_player()).await;
                 own_observer = Some(obs);
             }
 
@@ -1592,17 +2542,20 @@ fn spawn_live_stream(
                 debug_push,
             };
 
-            let (mut event_rx, stream_handle) = spawn_activity_stream(
+            let (mut event_rx, stream_handle) = spawn_activity_stream_with_targets(
                 cache_dir.clone(),
                 stream_config,
                 Arc::clone(&live.refresh_notify),
                 stream_shutdown_rx,
+                listen_along.subscribe_extra_targets(),
             );
 
             loop {
                 if *shutdown_rx.borrow() {
                     let _ = stream_shutdown_tx.send(true);
                     let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                    listen_along.handle_disconnect_or_logout().await;
+                    player_hub.set_session(None).await;
                     close_open_sessions(&db_path, &mut active_plays).await;
                     if let Some(obs) = own_observer.take() {
                         obs.shutdown().await;
@@ -1618,6 +2571,8 @@ fn spawn_live_stream(
                         if *shutdown_rx.borrow() {
                             let _ = stream_shutdown_tx.send(true);
                             let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                            listen_along.handle_disconnect_or_logout().await;
+                            player_hub.set_session(None).await;
                             close_open_sessions(&db_path, &mut active_plays).await;
                             if let Some(obs) = own_observer.take() {
                                 obs.shutdown().await;
@@ -1638,6 +2593,8 @@ fn spawn_live_stream(
                         if !still_auth {
                             let _ = stream_shutdown_tx.send(true);
                             let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                            listen_along.handle_disconnect_or_logout().await;
+                            player_hub.set_session(None).await;
                             close_open_sessions(&db_path, &mut active_plays).await;
                             active_plays.clear();
                             if let Some(obs) = own_observer.take() {
@@ -1647,6 +2604,19 @@ fn spawn_live_stream(
                                 session.shutdown();
                             }
                             break;
+                        }
+                    }
+                    maybe_player = wait_own_player_update(&mut own_player_rx) => {
+                        match maybe_player {
+                            Some(player_snap) => {
+                                let now_ms = Utc::now().timestamp_millis();
+                                let obs = player_snapshot_to_observation(&player_snap, now_ms);
+                                player_hub.publish(player_snap).await;
+                                listen_along.on_player_update(obs, now_ms).await;
+                            }
+                            None => {
+                                own_player_rx = None;
+                            }
                         }
                     }
                     updated = wait_own_update(&mut own_updates_rx) => {
@@ -1702,6 +2672,7 @@ fn spawn_live_stream(
                         let Some(event) = ev else {
                             let _ = stream_shutdown_tx.send(true);
                             let _ = tokio::time::timeout(Duration::from_secs(2), stream_handle).await;
+                            player_hub.set_session(None).await;
                             if let Some(obs) = own_observer.take() {
                                 obs.shutdown().await;
                             }
@@ -1769,6 +2740,8 @@ fn spawn_live_stream(
 
                                 let sorted =
                                     build_sorted_live_friends(&friends_map, account_uri.as_deref());
+                                let observations: Vec<LiveTargetObservation> =
+                                    sorted.iter().map(live_friend_to_observation).collect();
                                 live.publish(LiveSnapshot {
                                     connected: true,
                                     status: "live".to_string(),
@@ -1782,6 +2755,7 @@ fn spawn_live_stream(
                                     friends: sorted,
                                 })
                                 .await;
+                                listen_along.on_live_update(&observations, now_ms).await;
 
                                 // Periodic profile sync (every 30 min) when logging to SQLite
                                 if log_to_db
@@ -1857,6 +2831,8 @@ fn spawn_live_stream(
 
                                 let sorted =
                                     build_sorted_live_friends(&friends_map, account_uri.as_deref());
+                                let observations: Vec<LiveTargetObservation> =
+                                    sorted.iter().map(live_friend_to_observation).collect();
                                 live.publish(LiveSnapshot {
                                     connected: true,
                                     status: "live".to_string(),
@@ -1870,6 +2846,7 @@ fn spawn_live_stream(
                                     friends: sorted,
                                 })
                                 .await;
+                                listen_along.on_live_update(&observations, now_ms).await;
                             }
                             ActivityEvent::Error {
                                 message,
@@ -1882,6 +2859,8 @@ fn spawn_live_stream(
                                         stream_handle,
                                     )
                                     .await;
+                                    listen_along.handle_disconnect_or_logout().await;
+                                    player_hub.set_session(None).await;
                                     close_open_sessions(&db_path, &mut active_plays).await;
                                     active_plays.clear();
                                     if let Some(obs) = own_observer.take() {
@@ -1947,12 +2926,28 @@ pub fn build_router(db_path: PathBuf, live: Arc<LiveHub>) -> Router {
 }
 
 pub fn build_router_with_cache(db_path: PathBuf, cache_dir: PathBuf, live: Arc<LiveHub>) -> Router {
+    let player = Arc::new(PlayerHub::new(live.is_offline()));
+    let listen_along = Arc::new(ListenAlongManager::new(Arc::new(HubPlayerAdapter::new(
+        Arc::clone(&player),
+    ))));
+    build_router_with_hubs(db_path, cache_dir, live, player, listen_along)
+}
+
+pub fn build_router_with_hubs(
+    db_path: PathBuf,
+    cache_dir: PathBuf,
+    live: Arc<LiveHub>,
+    player: Arc<PlayerHub>,
+    listen_along: Arc<ListenAlongManager>,
+) -> Router {
     let account_profile = live.account_profile_handle();
     let auth_in_progress = live.auth_in_progress_handle();
     let state = AppState {
         db_path: Arc::new(db_path),
         cache_dir: Arc::new(cache_dir),
         live,
+        player,
+        listen_along,
         account_profile,
         auth_in_progress,
     };
@@ -1972,6 +2967,30 @@ pub fn build_router_with_cache(db_path: PathBuf, cache_dir: PathBuf, live: Arc<L
         .route("/auth/status", get(api_auth_status))
         .route("/auth/login", post(api_auth_login))
         .route("/auth/logout", post(api_auth_logout))
+        .route("/player", get(api_player_state))
+        .route("/player/stream", get(api_player_stream))
+        .route("/player/devices", get(api_player_devices))
+        .route("/player/play", post(api_player_play))
+        .route("/player/pause", post(api_player_pause))
+        .route("/player/resume", post(api_player_resume))
+        .route("/player/toggle", post(api_player_toggle))
+        .route("/player/next", post(api_player_next))
+        .route("/player/previous", post(api_player_previous))
+        .route("/player/seek", post(api_player_seek))
+        .route("/player/volume", post(api_player_volume))
+        .route("/player/shuffle", post(api_player_shuffle))
+        .route("/player/repeat", post(api_player_repeat))
+        .route("/player/queue", post(api_player_queue))
+        .route("/player/transfer", post(api_player_transfer))
+        .route("/listen-along", get(api_listen_along_state))
+        .route("/listen-along/stream", get(api_listen_along_stream))
+        .route("/listen-along/start", post(api_listen_along_start))
+        .route("/listen-along/stop", post(api_listen_along_stop))
+        .route("/listen-along/resync", post(api_listen_along_resync))
+        .route(
+            "/listen-along/settings",
+            patch(api_listen_along_settings).post(api_listen_along_settings),
+        )
         .fallback(api_not_found);
 
     Router::new()
@@ -1999,11 +3018,17 @@ pub async fn start_embedded_server(config: UiConfig) -> anyhow::Result<EmbeddedS
 
     let poll_interval_secs = config.poll_interval_secs.max(MIN_POLL_INTERVAL_SECS);
     let live = Arc::new(LiveHub::new(poll_interval_secs, config.offline));
+    let player = Arc::new(PlayerHub::new(config.offline));
+    let listen_along = Arc::new(ListenAlongManager::new(Arc::new(HubPlayerAdapter::new(
+        Arc::clone(&player),
+    ))));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let stream_handle = if !config.offline {
         Some(spawn_live_stream(
             Arc::clone(&live),
+            Arc::clone(&player),
+            Arc::clone(&listen_along),
             config.cache_dir.clone(),
             config.db_path.clone(),
             poll_interval_secs,
@@ -2016,7 +3041,7 @@ pub async fn start_embedded_server(config: UiConfig) -> anyhow::Result<EmbeddedS
         None
     };
 
-    let app = build_router_with_cache(config.db_path, config.cache_dir, live);
+    let app = build_router_with_hubs(config.db_path, config.cache_dir, live, player, listen_along);
     let mut server_shutdown_rx = shutdown_rx;
     let task = tokio::spawn(async move {
         let shutdown_fut = async move {
@@ -2757,5 +3782,441 @@ mod tests {
         handle.shutdown().await;
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    async fn send_json_body(
+        app: &Router,
+        method: Method,
+        uri: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router response");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .expect("read body");
+        let json: Value = serde_json::from_slice(&bytes).expect("valid json");
+        (status, json)
+    }
+
+    struct MockWebListenAlongPlayer {
+        played: Mutex<Vec<ListenAlongPlayCommand>>,
+        paused: Mutex<u32>,
+        seeks: Mutex<Vec<i64>>,
+    }
+
+    impl MockWebListenAlongPlayer {
+        fn new() -> Self {
+            Self {
+                played: Mutex::new(Vec::new()),
+                paused: Mutex::new(0),
+                seeks: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ListenAlongPlayerAdapter for MockWebListenAlongPlayer {
+        fn play(
+            &self,
+            cmd: ListenAlongPlayCommand,
+        ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+            Box::pin(async move {
+                let dev = cmd
+                    .device_id
+                    .clone()
+                    .unwrap_or_else(|| "dev-mock-1".to_string());
+                self.played.lock().await.push(cmd);
+                Ok(dev)
+            })
+        }
+
+        fn pause(
+            &self,
+            device_id: Option<&str>,
+        ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+            let dev = device_id.unwrap_or("dev-mock-1").to_string();
+            Box::pin(async move {
+                *self.paused.lock().await += 1;
+                Ok(dev)
+            })
+        }
+
+        fn resume(
+            &self,
+            device_id: Option<&str>,
+        ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+            let dev = device_id.unwrap_or("dev-mock-1").to_string();
+            Box::pin(async move { Ok(dev) })
+        }
+
+        fn seek(
+            &self,
+            position_ms: i64,
+            device_id: Option<&str>,
+        ) -> BoxFuture<'_, Result<String, ListenAlongError>> {
+            let dev = device_id.unwrap_or("dev-mock-1").to_string();
+            Box::pin(async move {
+                self.seeks.lock().await.push(position_ms);
+                Ok(dev)
+            })
+        }
+
+        fn current_observation(&self, _now_ms: i64) -> BoxFuture<'_, OwnPlayerObservation> {
+            Box::pin(async move {
+                OwnPlayerObservation {
+                    connected: true,
+                    active_device_id: Some("dev-mock-1".to_string()),
+                    has_playable_device: true,
+                    is_playing: true,
+                    is_paused: false,
+                    track_uri: Some("spotify:track:alice1".to_string()),
+                    estimated_position_ms: 15_000,
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_player_endpoints_and_sse_contract() {
+        let db_path = make_temp_db_path("player-endpoints");
+        let _ = Database::open(&db_path).expect("open db");
+
+        // Offline mode: read endpoints succeed, control endpoints return 503 offline
+        let offline_live = Arc::new(LiveHub::new(15, true));
+        let offline_app = build_router(db_path.clone(), Arc::clone(&offline_live));
+
+        let (status, snap) = get_json(&offline_app, "/api/player").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(snap["connected"], false);
+        assert_eq!(snap["repeat_mode"], "off");
+        assert_eq!(snap["devices"].as_array().unwrap().len(), 0);
+
+        let (status, devices) = get_json(&offline_app, "/api/player/devices").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(devices["active_device_id"].is_null());
+        assert_eq!(devices["devices"].as_array().unwrap().len(), 0);
+
+        let (status, err) = post_json(&offline_app, "/api/player/pause").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err["code"], "offline");
+
+        // Online unauthenticated mode + published snapshot + SSE + validation
+        let live = Arc::new(LiveHub::new(15, false));
+        let player = Arc::new(PlayerHub::new(false));
+        let listen_along = Arc::new(ListenAlongManager::new(Arc::new(HubPlayerAdapter::new(
+            Arc::clone(&player),
+        ))));
+        let cache_dir = db_path.parent().unwrap().join("player-test-cache");
+        let app = build_router_with_hubs(
+            db_path.clone(),
+            cache_dir,
+            Arc::clone(&live),
+            Arc::clone(&player),
+            Arc::clone(&listen_along),
+        );
+
+        player
+            .publish(PlayerSnapshot {
+                connected: true,
+                updated_at_ms: 1_700_000_000_000,
+                active_device_id: Some("dev-mac".to_string()),
+                devices: vec![PlayerDevice {
+                    id: "dev-mac".to_string(),
+                    name: "MacBook Pro".to_string(),
+                    device_type: "computer".to_string(),
+                    is_active: true,
+                    is_private_session: false,
+                    is_restricted: false,
+                    is_offline: false,
+                    volume_percent: 65,
+                    volume_raw: 42598,
+                    supports_volume: true,
+                    volume_steps: 64,
+                }],
+                is_playing: true,
+                is_paused: false,
+                is_buffering: false,
+                playback_speed: 1.0,
+                position_ms: 12_000,
+                position_timestamp_ms: 1_700_000_000_000,
+                duration_ms: 200_000,
+                shuffle: true,
+                repeat_mode: RepeatMode::Context,
+                track: None,
+                context: None,
+                queue_next: Vec::new(),
+                restrictions: Default::default(),
+            })
+            .await;
+
+        let (status, devices_json) = get_json(&app, "/api/player/devices").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(devices_json["active_device_id"], "dev-mac");
+        assert_eq!(devices_json["devices"][0]["name"], "MacBook Pro");
+        assert_eq!(devices_json["devices"][0]["volume_percent"], 65);
+
+        // Input validation returns 400 invalid_input
+        let (status, bad_vol) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/player/volume",
+            serde_json::json!({ "volume_percent": 150 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_vol["code"], "invalid_input");
+
+        let (status, bad_seek) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/player/seek",
+            serde_json::json!({ "position_ms": -5 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_seek["code"], "invalid_input");
+
+        let (status, bad_queue) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/player/queue",
+            serde_json::json!({ "track_uri": "   " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_queue["code"], "invalid_input");
+
+        let (status, bad_transfer) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/player/transfer",
+            serde_json::json!({ "device_id": "" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_transfer["code"], "invalid_input");
+
+        // Control command without active Spotify session returns 401 unauthenticated
+        let (status, unauth) = post_json(&app, "/api/player/next").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(unauth["code"], "unauthenticated");
+
+        // Verify /api/player/stream SSE emits event: player
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/player/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("player sse response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut body_stream = resp.into_body().into_data_stream();
+        let first_chunk = tokio::time::timeout(Duration::from_secs(2), body_stream.next())
+            .await
+            .expect("player sse timeout")
+            .expect("player sse chunk")
+            .expect("player sse bytes");
+        let chunk_text = String::from_utf8(first_chunk.to_vec()).expect("utf8");
+        assert!(chunk_text.contains("event: player"));
+        assert!(chunk_text.contains("\"active_device_id\":\"dev-mac\""));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn test_listen_along_endpoints_and_sse_flow() {
+        let db_path = make_temp_db_path("listen-along-endpoints");
+        let _ = Database::open(&db_path).expect("open db");
+
+        let live = Arc::new(LiveHub::new(15, false));
+        let player = Arc::new(PlayerHub::new(false));
+        let mock_adapter = Arc::new(MockWebListenAlongPlayer::new());
+        let listen_along = Arc::new(ListenAlongManager::new(mock_adapter.clone()));
+        let cache_dir = db_path.parent().unwrap().join("la-test-cache-missing");
+
+        let app = build_router_with_hubs(
+            db_path.clone(),
+            cache_dir,
+            Arc::clone(&live),
+            Arc::clone(&player),
+            Arc::clone(&listen_along),
+        );
+
+        // Initial state is idle
+        let (status, initial) = get_json(&app, "/api/listen-along").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(initial["active"], false);
+        assert_eq!(initial["status"], "idle");
+
+        // Unauthenticated start rejected with 401
+        let (status, unauth) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/listen-along/start",
+            serde_json::json!({ "user_uri": "alice" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(unauth["code"], "unauthenticated");
+
+        // Seed connected live snapshot with self ("me") and friend ("alice") playing
+        let now_ms = Utc::now().timestamp_millis();
+        live.set_account_profile(Some(AccountProfile {
+            user_uri: "spotify:user:me".to_string(),
+            username: "me".to_string(),
+            display_name: "Me".to_string(),
+            image_url: None,
+        }))
+        .await;
+        live.publish(LiveSnapshot {
+            connected: true,
+            status: "live".to_string(),
+            transport: Some("dealer_push".to_string()),
+            message: None,
+            account: Some("me".to_string()),
+            account_uri: Some("spotify:user:me".to_string()),
+            account_profile: None,
+            updated_at_ms: Some(now_ms),
+            poll_interval_secs: 15,
+            friends: vec![LiveFriendItem {
+                user_uri: "spotify:user:alice".to_string(),
+                user_name: "Alice".to_string(),
+                user_image_url: Some("https://example.com/alice.jpg".to_string()),
+                playing: true,
+                timestamp_ms: now_ms - 15_000,
+                item_type: "track".to_string(),
+                track_uri: "spotify:track:alice1".to_string(),
+                track_name: "Midnight City".to_string(),
+                all_artists: "M83".to_string(),
+                album_name: Some("Hurry Up, We're Dreaming".to_string()),
+                cover_url: Some("https://example.com/cover.jpg".to_string()),
+                duration_ms: Some(243_000),
+                popularity: Some(80),
+                explicit: Some(false),
+                release_date: Some("2011-10-18".to_string()),
+                context_name: Some("Liked Songs".to_string()),
+                context_uri: Some("spotify:user:alice:collection".to_string()),
+                context_type: Some("liked_songs".to_string()),
+                context_owner: Some("Alice".to_string()),
+                context_is_private: true,
+                context_image_url: None,
+                spotify_url: "https://open.spotify.com/track/alice1".to_string(),
+                is_self: false,
+            }],
+        })
+        .await;
+
+        // Self-target rejected with 400 self_target
+        let (status, self_err) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/listen-along/start",
+            serde_json::json!({ "user_uri": "me" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(self_err["code"], "self_target");
+
+        // Start listen-along targeting Alice -> immediately syncs and drops private context
+        let (status, started) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/listen-along/start",
+            serde_json::json!({ "user_uri": "alice", "device_id": "dev-custom" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(started["active"], true);
+        assert_eq!(started["status"], "synced");
+        assert_eq!(started["target"]["user_uri"], "spotify:user:alice");
+        assert_eq!(started["resolved_device_id"], "dev-custom");
+        assert_eq!(started["sync_count"], 1);
+        {
+            let played = mock_adapter.played.lock().await;
+            assert_eq!(played.len(), 1);
+            assert_eq!(played[0].track_uri, "spotify:track:alice1");
+            assert!(played[0].context_uri.is_none()); // Liked Songs is private
+            assert_eq!(played[0].device_id.as_deref(), Some("dev-custom"));
+        }
+
+        // PATCH /api/listen-along/settings updates settings and allows clearing device_id to null
+        let (status, patched) = send_json_body(
+            &app,
+            Method::PATCH,
+            "/api/listen-along/settings",
+            serde_json::json!({ "device_id": null, "drift_threshold_ms": 9000, "sync_pause": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(patched["settings"]["device_id"].is_null());
+        assert_eq!(patched["settings"]["drift_threshold_ms"], 9000);
+        assert_eq!(patched["settings"]["sync_pause"], false);
+
+        // POST /api/listen-along/settings also supported
+        let (status, posted) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/listen-along/settings",
+            serde_json::json!({ "auto_resync": false }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(posted["settings"]["auto_resync"], false);
+
+        // SSE /api/listen-along/stream emits event: listen_along
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/listen-along/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("la sse response");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut body_stream = resp.into_body().into_data_stream();
+        let first_chunk = tokio::time::timeout(Duration::from_secs(2), body_stream.next())
+            .await
+            .expect("la sse timeout")
+            .expect("la sse chunk")
+            .expect("la sse bytes");
+        let chunk_text = String::from_utf8(first_chunk.to_vec()).expect("utf8");
+        assert!(chunk_text.contains("event: listen_along"));
+        assert!(chunk_text.contains("\"status\":\"synced\""));
+
+        // Resync works while active
+        let (status, resynced) = post_json(&app, "/api/listen-along/resync").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resynced["status"], "synced");
+
+        // Stop with pause_playback: true pauses mock player and returns idle
+        let (status, stopped) = send_json_body(
+            &app,
+            Method::POST,
+            "/api/listen-along/stop",
+            serde_json::json!({ "pause_playback": true }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stopped["active"], false);
+        assert_eq!(stopped["status"], "idle");
+        assert_eq!(*mock_adapter.paused.lock().await, 1);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }
