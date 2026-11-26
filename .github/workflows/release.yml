@@ -496,7 +496,20 @@ jobs:
         working-directory: src-tauri
         env:
           NO_STRIP: "true"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          set -euo pipefail
+          if [[ "${RUNNER_OS:-}" == "macOS" ]] && [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+            # Ad-hoc sign the .app bundle before DMG creation so Apple Silicon
+            # accepts the signature once macOS quarantine is cleared.
+            export APPLE_SIGNING_IDENTITY="-"
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
           printf '{"build":{"beforeBuildCommand":"echo Using prebuilt web/dist"}}\n' > ci-override.json
           tauri build --target ${{ matrix.target }} --config ci-override.json
           rm -f ci-override.json
@@ -528,6 +541,33 @@ jobs:
           for f in "${BUNDLE_DIR}"/deb/*.deb; do
             cp "$f" "release-assets/bside-${TAG}-${ASSET_SUFFIX}.deb"
           done
+          for f in "${BUNDLE_DIR}"/rpm/*.rpm; do
+            cp "$f" "release-assets/bside-${TAG}-${ASSET_SUFFIX}.rpm"
+          done
+
+          # Package a standalone native Linux desktop tarball for Arch and other
+          # rolling-release distros where Ubuntu-built AppImages can clash with
+          # system Mesa/glibc/FUSE2.
+          if [[ "${RUNNER_OS:-}" == "Linux" ]]; then
+            STAGE_DIR="$(mktemp -d)"
+            PKG_DIR="${STAGE_DIR}/bside-${TAG}-${ASSET_SUFFIX}-desktop"
+            mkdir -p "${PKG_DIR}"
+            cp "src-tauri/target/${TARGET}/release/bside-desktop" "${PKG_DIR}/bside-desktop"
+            chmod +x "${PKG_DIR}/bside-desktop"
+            cp "src-tauri/icons/icon.png" "${PKG_DIR}/bside.png"
+            printf '%s\n' \
+              '[Desktop Entry]' \
+              'Name=bside' \
+              'Comment=Local-first Spotify listening & friend-circle analytics' \
+              'Exec=bside-desktop' \
+              'Icon=bside' \
+              'Terminal=false' \
+              'Type=Application' \
+              'Categories=AudioVideo;Audio;Music;' \
+              > "${PKG_DIR}/bside.desktop"
+            tar -czf "release-assets/bside-${TAG}-${ASSET_SUFFIX}-desktop.tar.gz" -C "${STAGE_DIR}" "bside-${TAG}-${ASSET_SUFFIX}-desktop"
+            rm -rf "${STAGE_DIR}"
+          fi
 
           ls -la release-assets
           if [ -z "$(ls -A release-assets)" ]; then
@@ -570,7 +610,7 @@ jobs:
           set -euo pipefail
           cd dist
           shopt -s nullglob
-          files=(*.tar.gz *.zip *.dmg *.msi *-setup.exe *.AppImage *.deb)
+          files=(*.tar.gz *.zip *.dmg *.msi *-setup.exe *.AppImage *.deb *.rpm)
           LC_ALL=C sha256sum "${files[@]}" | LC_ALL=C sort -k 2 > SHA256SUMS.txt
           sha256sum -c SHA256SUMS.txt
 
@@ -587,4 +627,6 @@ jobs:
             dist/*-setup.exe
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*-desktop.tar.gz
             dist/SHA256SUMS.txt
