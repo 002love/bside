@@ -42,32 +42,3 @@ export function PixelEq({ active = true, className }: PixelEqProps) {
     </span>
   );
 }
-
-export interface PixelDotProps {
-  active?: boolean;
-  tone?: 'sage' | 'amber' | 'rust' | 'muted';
-  className?: string;
-}
-
-const TONE_MAP = {
-  sage: 'bg-[var(--accent-ember)]',
-  amber: 'bg-[var(--warning)]',
-  rust: 'bg-[var(--danger)]',
-  muted: 'bg-[var(--ink-muted)]',
-} as const;
-
-/**
- * Static, non-pulsing hairline indicator (retained only for legacy references).
- */
-export function PixelDot({ tone = 'sage', className }: PixelDotProps) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-        TONE_MAP[tone],
-        className,
-      )}
-    />
-  );
-}
