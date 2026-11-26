@@ -14,7 +14,7 @@ export function SelectTrigger({
   return (
     <RadixSelect.Trigger
       className={cn(
-        'flex h-8 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-3 text-xs text-[var(--ink-primary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus:border-[var(--accent-primary)] focus:outline-none cursor-pointer',
+        'tactile-press flex h-8 items-center justify-between gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2.5 text-xs text-[var(--ink-primary)] transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-surface)] focus:border-[var(--border-focus)] focus:outline-none cursor-pointer',
         className,
       )}
       {...props}
@@ -40,7 +40,7 @@ export function SelectContent({
         sideOffset={6}
         collisionPadding={collisionPadding}
         className={cn(
-          'z-50 min-w-[12rem] max-w-[calc(100vw-1.5rem)] overflow-hidden bside-popover p-1',
+          'z-50 min-w-[11rem] max-w-[calc(100vw-1.5rem)] overflow-hidden bside-popover p-1',
           className,
         )}
         {...props}
@@ -61,7 +61,7 @@ export function SelectItem({
   return (
     <RadixSelect.Item
       className={cn(
-        'relative flex w-full cursor-pointer select-none items-center rounded-[calc(var(--radius-control)*0.75)] py-1.5 pr-8 pl-2.5 text-xs text-[var(--ink-primary)] outline-none transition-colors focus:bg-[var(--bg-hover)] focus:text-[var(--accent-primary)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+        'relative flex w-full cursor-pointer select-none items-center rounded-[6px] py-1.5 pr-8 pl-2.5 text-xs text-[var(--ink-secondary)] outline-none transition-colors focus:bg-[var(--bg-hover)] focus:text-[var(--ink-primary)] data-[state=checked]:text-[var(--ink-primary)] data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
         className,
       )}
       {...props}
@@ -69,7 +69,7 @@ export function SelectItem({
       <RadixSelect.ItemText>{children}</RadixSelect.ItemText>
       <span className="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
         <RadixSelect.ItemIndicator>
-          <Check className="h-3.5 w-3.5 text-[var(--accent-primary)]" />
+          <Check className="h-3.5 w-3.5 text-[var(--accent-ember)]" />
         </RadixSelect.ItemIndicator>
       </span>
     </RadixSelect.Item>

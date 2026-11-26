@@ -2,24 +2,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Clock,
-  Disc3,
   GitCompare,
+  Headphones,
   ListMusic,
-  Palette,
+  Menu,
   Radio,
   RefreshCw,
+  Timer,
   Users,
   X,
 } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { EASE_OUT_EXPO, PageTransition, SPRING_SNAPPY } from '@/components/ui/motion';
 import { AccountBadge } from '@/components/AccountBadge';
 import { FriendMultiSelect, type FriendOption } from '@/components/FriendMultiSelect';
 import { InfoTooltip } from '@/components/InfoTooltip';
 import { LiveNowSection } from '@/components/LiveNowSection';
-import { PixelDot } from '@/components/PixelEq';
+import { PixelEq } from '@/components/PixelEq';
 import { UserAvatar, lookupAvatar } from '@/components/UserAvatar';
 import { OverviewTab } from '@/components/tabs/OverviewTab';
 import { HistoryTab } from '@/components/tabs/HistoryTab';
@@ -27,36 +28,93 @@ import { PlaylistsTab } from '@/components/tabs/PlaylistsTab';
 import { OverlapTab } from '@/components/tabs/OverlapTab';
 import { ProfilesTab } from '@/components/tabs/ProfilesTab';
 import { useLiveFeed } from '@/hooks/useLiveFeed';
-import { useTheme } from '@/hooks/useTheme';
+import { useCoverAccent } from '@/lib/extractColor';
 import { cn } from '@/lib/utils';
 import type {
   AccountProfile,
   AvatarMap,
   FriendSummary,
+  LiveFriendItem,
   TimeframeKey,
 } from '@/types/api';
 
-const TIMEFRAMES: { key: TimeframeKey; label: string }[] = [
-  { key: '7', label: '7D' },
-  { key: '30', label: '30D' },
-  { key: '90', label: '90D' },
-  { key: 'all', label: 'ALL' },
+type NavKey = 'live' | 'overview' | 'history' | 'playlists' | 'overlap' | 'profiles';
+
+const NAV_ITEMS: { key: NavKey; label: string; icon: typeof Radio }[] = [
+  { key: 'live', label: 'Live', icon: Radio },
+  { key: 'overview', label: 'Overview', icon: BarChart3 },
+  { key: 'history', label: 'History', icon: Clock },
+  { key: 'playlists', label: 'Playlists', icon: ListMusic },
+  { key: 'overlap', label: 'Overlap', icon: GitCompare },
+  { key: 'profiles', label: 'Friends', icon: Users },
 ];
 
+const TIMEFRAMES: { key: TimeframeKey; label: string }[] = [
+  { key: '7', label: '7d' },
+  { key: '30', label: '30d' },
+  { key: '90', label: '90d' },
+  { key: 'all', label: 'All' },
+];
+
+function SidebarLiveRow({
+  friend,
+  avatarUrl,
+  isSelected,
+  onClick,
+}: {
+  friend: LiveFriendItem;
+  avatarUrl: string | null;
+  isSelected: boolean;
+  onClick: () => void;
+}) {
+  const palette = useCoverAccent(friend.cover_url, friend.track_uri || friend.track_name);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${friend.user_name} · ${friend.track_name}`}
+      className={cn(
+        'tactile-press group flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-left transition-colors cursor-pointer',
+        isSelected ? 'bg-white/[0.11] text-white' : 'hover:bg-white/[0.055]',
+      )}
+    >
+      <UserAvatar
+        name={friend.user_name}
+        imageUrl={avatarUrl}
+        size="sm"
+        isLive
+        isSelf={friend.is_self}
+        ringColor={palette.accent}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-1.5">
+          <span className="truncate text-xs font-medium text-white">
+            {friend.user_name}
+          </span>
+          <PixelEq active color={palette.accent} className="h-2.5 shrink-0" />
+        </div>
+        <div className="truncate text-[11px] text-[var(--ink-muted)] group-hover:text-[var(--ink-secondary)]">
+          {friend.track_name}
+        </div>
+      </div>
+    </button>
+  );
+}
+
 export function App() {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState<NavKey>('live');
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [timeframe, setTimeframe] = useState<TimeframeKey>('30');
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [focusedContextUri, setFocusedContextUri] = useState<string | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const [friends, setFriends] = useState<FriendSummary[]>([]);
   const [loadingFriends, setLoadingFriends] = useState(false);
 
-  const { theme, toggleTheme } = useTheme();
   const live = useLiveFeed();
-
   const days: number | null = timeframe === 'all' ? null : Number(timeframe);
 
   const triggerRefresh = useCallback(() => {
@@ -67,6 +125,7 @@ export function App() {
   const handleSelectPlaylist = useCallback((contextUri: string) => {
     setFocusedContextUri(contextUri);
     setActiveTab('playlists');
+    setMobileNavOpen(false);
   }, []);
 
   const handleFilterByUser = useCallback((userUri: string) => {
@@ -110,7 +169,6 @@ export function App() {
     };
   }, [refreshTick]);
 
-  // Derive connected account profile from live snapshot or self friend summary
   const accountProfile = useMemo<AccountProfile | null>(() => {
     if (live.snapshot?.account_profile) {
       return live.snapshot.account_profile;
@@ -167,7 +225,6 @@ export function App() {
     );
   }, [accountProfile]);
 
-  // Build deduplicated multi-select options combining /api/friends + live + accountProfile
   const friendOptions = useMemo<FriendOption[]>(() => {
     const map = new Map<string, FriendOption>();
 
@@ -221,7 +278,6 @@ export function App() {
     });
   }, [friends, live.snapshot, accountProfile, selfLiveItem]);
 
-  // Build avatarMap keyed by BOTH user_uri and user_name.toLowerCase()
   const avatarMap = useMemo<AvatarMap>(() => {
     const map: AvatarMap = {};
     const register = (
@@ -278,363 +334,460 @@ export function App() {
     });
   }, [selectedUsers, friendOptions, avatarMap]);
 
+  const liveFriends = useMemo(
+    () => (live.snapshot?.friends ?? []).filter((f) => f.playing),
+    [live.snapshot],
+  );
+
   const liveSpinningCount = live.snapshot
-    ? live.snapshot.friends.filter((f) => f.playing).length
+    ? liveFriends.length
     : friends.filter((f) => f.is_live).length;
 
-  const liveConnected = live.snapshot?.connected ?? false;
+  const primaryLiveAccent = useCoverAccent(
+    liveFriends[0]?.cover_url,
+    liveFriends[0]?.track_uri || liveFriends[0]?.track_name,
+  );
 
-  return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex min-h-screen flex-col bg-[var(--bg-canvas)] bg-pixel-grid text-[var(--ink-primary)]">
-        {/* Sticky Top Header */}
-        <header className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[var(--bg-canvas)]/95 backdrop-blur-md">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
-            {/* Left: Brand Wordmark + Live Status Pill */}
-            <div className="flex items-center gap-3.5">
+  const connectionSubtitle = useMemo(() => {
+    if (!live.snapshot) return 'Archive';
+    if (live.snapshot.connected && live.snapshot.status === 'live') {
+      if (live.snapshot.transport === 'dealer_push') return 'Realtime';
+      if (live.snapshot.transport === 'mercury_push') return 'Mercury';
+      if (live.snapshot.transport === 'http_polling') return 'Polling';
+      return 'Connected';
+    }
+    return live.snapshot.status === 'unauthenticated' ? 'Sign in' : 'Offline';
+  }, [live.snapshot]);
+
+  const sidebarContent = (
+    <div className="flex h-full flex-col bg-[var(--bg-rail)]">
+      {/* Brand Header */}
+      <div className="flex h-[54px] shrink-0 items-center justify-between px-4">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('live');
+            setMobileNavOpen(false);
+          }}
+          className="flex items-center gap-2 text-left transition-opacity hover:opacity-85 cursor-pointer"
+        >
+          <span className="font-display text-[18px] font-bold tracking-[-0.035em] text-white">
+            bside
+          </span>
+          <span
+            className="h-1.5 w-1.5 rounded-full transition-colors duration-500"
+            style={{
+              backgroundColor:
+                liveSpinningCount > 0 ? primaryLiveAccent.accent : 'var(--accent-ember)',
+            }}
+            aria-hidden="true"
+          />
+        </button>
+
+        <span className="text-[11px] font-medium text-[var(--ink-muted)]">
+          {connectionSubtitle}
+        </span>
+      </div>
+
+      {/* Primary Navigation */}
+      <nav aria-label="Primary" className="px-2.5 pt-1">
+        <div className="space-y-0.5">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.key;
+            return (
               <button
+                key={item.key}
                 type="button"
-                onClick={() => setActiveTab('overview')}
-                className="flex items-baseline gap-0.5 font-display text-3xl font-extrabold leading-none tracking-tight text-[var(--ink-primary)] transition-opacity hover:opacity-90 cursor-pointer"
+                onClick={() => {
+                  setActiveTab(item.key);
+                  setMobileNavOpen(false);
+                }}
+                className={cn(
+                  'relative flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2 text-[13px] font-medium transition-colors cursor-pointer select-none',
+                  isActive
+                    ? 'text-white'
+                    : 'text-[var(--ink-secondary)] hover:bg-white/[0.05] hover:text-white',
+                )}
               >
-                <span>bside</span>
-                <span
-                  className="inline-block h-[7px] w-[7px] rounded-[var(--radius-pill)] bg-[var(--accent-primary)]"
-                  aria-hidden="true"
+                {isActive && (
+                  <motion.span
+                    layoutId="sidebar-nav-pill"
+                    transition={SPRING_SNAPPY}
+                    className="absolute inset-0 rounded-[8px] bg-white/[0.11]"
+                  />
+                )}
+                <Icon
+                  className={cn(
+                    'relative z-10 h-4 w-4 shrink-0 transition-colors',
+                    isActive ? 'text-white' : 'text-[var(--ink-muted)]',
+                  )}
                 />
-              </button>
-
-              <div className="hidden h-5 w-px bg-[var(--border-subtle)] sm:block" />
-
-              <button
-                type="button"
-                onClick={() => setActiveTab('live')}
-                className="inline-flex items-center gap-2 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-widest transition-colors hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] cursor-pointer"
-                title="Open Live Now deck"
-              >
-                <PixelDot
-                  active={liveSpinningCount > 0}
-                  tone={
-                    liveSpinningCount > 0
-                      ? 'sage'
-                      : liveConnected
-                        ? 'muted'
-                        : 'amber'
-                  }
-                />
-                {liveSpinningCount > 0 ? (
-                  <span className="text-[var(--accent-primary)]">
-                    LIVE &middot; {liveSpinningCount} ON AIR
-                  </span>
-                ) : liveConnected ? (
-                  <span className="text-[var(--ink-muted)]">LIVE &middot; IDLE</span>
-                ) : (
-                  <span className="text-[var(--ink-muted)]">
-                    {live.snapshot?.status ? live.snapshot.status.toUpperCase() : 'ARCHIVE'}
+                <span className="relative z-10 flex-1 text-left">{item.label}</span>
+                {item.key === 'live' && liveSpinningCount > 0 && (
+                  <span
+                    className="relative z-10 tabular-nums text-[11px] font-semibold"
+                    style={{ color: primaryLiveAccent.accent }}
+                  >
+                    {liveSpinningCount}
                   </span>
                 )}
               </button>
-            </div>
+            );
+          })}
+        </div>
+      </nav>
 
-            {/* Right: Filters, Controls, Theme Toggle & Own Account Badge */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Multi-Friend Selector */}
-              <FriendMultiSelect
-                friends={friendOptions}
-                selectedUsers={selectedUsers}
-                onChange={setSelectedUsers}
-              />
-
-              {/* Timeframe Segmented Control */}
-              <InfoTooltip
-                content="Scopes stats, history, playlists, overlap, and profile changes to this time window."
-                side="bottom"
-              >
-                <div className="inline-flex items-center overflow-hidden rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)]">
-                  {TIMEFRAMES.map((tf) => (
-                    <button
-                      key={tf.key}
-                      type="button"
-                      onClick={() => setTimeframe(tf.key)}
-                      className={cn(
-                        'border-r border-[var(--border-subtle)] px-2.5 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors last:border-r-0 cursor-pointer',
-                        timeframe === tf.key
-                          ? 'bg-[var(--accent-primary)] text-[var(--ink-on-accent)]'
-                          : 'text-[var(--ink-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)]',
-                      )}
-                    >
-                      {tf.label}
-                    </button>
-                  ))}
-                </div>
-              </InfoTooltip>
-
-              {/* Auto-Refresh 30s Toggle */}
-              <InfoTooltip
-                content="Auto-refresh database analytics every 30 seconds. Live Now updates continuously via SSE stream."
-                side="bottom"
-              >
-                <div className="flex h-8 items-center gap-2 rounded-[var(--radius-control)] border border-[var(--border-subtle)] bg-[var(--bg-inset)] px-2.5">
-                  <label
-                    htmlFor="auto-refresh-toggle"
-                    className="font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--ink-muted)] cursor-pointer select-none"
-                  >
-                    AUTO 30s
-                  </label>
-                  <Switch
-                    id="auto-refresh-toggle"
-                    checked={autoRefresh}
-                    onCheckedChange={setAutoRefresh}
-                  />
-                </div>
-              </InfoTooltip>
-
-              {/* Refresh Button */}
-              <InfoTooltip
-                content="Poll Spotify now and refresh all charts & history."
-                side="bottom"
-              >
-                <Button variant="secondary" size="md" onClick={triggerRefresh}>
-                  <RefreshCw
-                    className={cn(
-                      'h-3 w-3',
-                      (loadingFriends || live.polling) && 'animate-spin',
-                    )}
-                  />
-                  Refresh
-                </Button>
-              </InfoTooltip>
-
-              {/* Dual Theme Toggle */}
-              <InfoTooltip
-                content="Switch between Spotify Dark (layered) and Classic B-Side themes"
-                side="bottom"
-              >
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={toggleTheme}
-                  aria-label="Toggle theme"
-                >
-                  {theme === 'spotify' ? (
-                    <>
-                      <Disc3 className="h-3.5 w-3.5 text-[var(--accent-primary)]" />
-                      <span className="hidden sm:inline">Spotify</span>
-                    </>
-                  ) : (
-                    <>
-                      <Palette className="h-3.5 w-3.5 text-[var(--accent-primary)]" />
-                      <span className="hidden sm:inline">Classic</span>
-                    </>
-                  )}
-                </Button>
-              </InfoTooltip>
-
-              {/* Top-Right Connected Own Account Badge */}
-              <AccountBadge
-                profile={accountProfile}
-                liveItem={selfLiveItem}
-                isFilteredToSelf={isFilteredToSelf}
-                onFilterSelf={handleFilterSelf}
-              />
-            </div>
-          </div>
-        </header>
-
-        {/* Main Workspace */}
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6">
-          {/* Active Filter Summary Bar */}
-          {selectedUsers.length > 0 && (
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-control)] border border-[var(--border-accent)] bg-[var(--accent-soft)] px-3 py-2 animate-fade-up">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-[10px] font-semibold uppercase tracking-widest text-[var(--accent-primary)]">
-                  Filtered to
-                </span>
-                {selectedFriendObjects.map((friend) => (
-                  <span
-                    key={friend.user_uri}
-                    className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] border border-[var(--border-subtle)] bg-[var(--bg-panel)] py-0.5 pr-1.5 pl-1 text-xs font-medium text-[var(--ink-primary)]"
-                  >
-                    <UserAvatar
-                      name={friend.user_name}
-                      imageUrl={friend.image_url}
-                      size="xs"
-                      isLive={friend.is_live}
-                      isSelf={friend.is_self}
-                    />
-                    <span className="max-w-[140px] truncate">{friend.user_name}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSelectedUsers((prev) =>
-                          prev.filter((u) => u !== friend.user_uri),
-                        )
-                      }
-                      className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--ink-primary)] cursor-pointer"
-                      aria-label={`Remove ${friend.user_name} from filter`}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedUsers([])}
-                className="h-6 px-2 text-[10px]"
-              >
-                <X className="h-3 w-3" />
-                Reset filter
-              </Button>
-            </div>
+      {/* Active Circle / Listen Along Rail */}
+      <div className="mt-6 flex min-h-0 flex-1 flex-col px-2.5">
+        <div className="mb-2 flex items-center justify-between px-2.5">
+          <span className="text-[11px] font-medium text-[var(--ink-muted)]">
+            Active circle
+          </span>
+          {liveFriends.length > 0 && (
+            <span className="tabular-nums text-[11px] text-[var(--ink-muted)]">
+              {liveFriends.length}
+            </span>
           )}
+        </div>
 
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <div className="overflow-x-auto pb-1">
-              <TabsList>
-                <TabsTrigger value="live">
-                  <Radio className="h-3.5 w-3.5" />
-                  <span>LIVE</span>
-                  {liveSpinningCount > 0 && (
-                    <span className="ml-0.5 rounded-[var(--radius-pill)] border border-current px-1.5 py-0 text-[9px] leading-tight">
-                      {liveSpinningCount}
-                    </span>
-                  )}
-                </TabsTrigger>
-                <TabsTrigger value="overview">
-                  <BarChart3 className="h-3.5 w-3.5" />
-                  OVERVIEW
-                </TabsTrigger>
-                <TabsTrigger value="history">
-                  <Clock className="h-3.5 w-3.5" />
-                  HISTORY
-                </TabsTrigger>
-                <TabsTrigger value="playlists">
-                  <ListMusic className="h-3.5 w-3.5" />
-                  PLAYLISTS
-                </TabsTrigger>
-                <TabsTrigger value="overlap">
-                  <GitCompare className="h-3.5 w-3.5" />
-                  OVERLAP
-                </TabsTrigger>
-                <TabsTrigger value="profiles">
-                  <Users className="h-3.5 w-3.5" />
-                  PROFILES
-                </TabsTrigger>
-              </TabsList>
+        <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-0.5">
+          {liveFriends.length === 0 ? (
+            <div className="px-2.5 py-3 text-[11.5px] leading-relaxed text-[var(--ink-muted)]">
+              Quiet right now. Active listeners appear here.
             </div>
+          ) : (
+            liveFriends.map((friend) => {
+              const isSelected =
+                selectedUsers.length === 1 && selectedUsers[0] === friend.user_uri;
+              return (
+                <SidebarLiveRow
+                  key={friend.user_uri}
+                  friend={friend}
+                  avatarUrl={
+                    friend.user_image_url ??
+                    lookupAvatar(avatarMap, friend.user_uri, friend.user_name)
+                  }
+                  isSelected={isSelected}
+                  onClick={() => {
+                    handleFilterByUser(friend.user_uri);
+                    setActiveTab('live');
+                    setMobileNavOpen(false);
+                  }}
+                />
+              );
+            })
+          )}
+        </div>
 
-            <TabsContent value="live">
-              <LiveNowSection
-                live={live}
-                mode="full"
-                selectedUsers={selectedUsers}
-                avatarMap={avatarMap}
-                onSelectPlaylist={handleSelectPlaylist}
-                onFilterByUser={handleFilterByUser}
-              />
-            </TabsContent>
-
-            <TabsContent value="overview">
-              <OverviewTab
-                selectedUsers={selectedUsers}
-                days={days}
-                refreshTick={refreshTick}
-                avatarMap={avatarMap}
-                onSelectPlaylist={handleSelectPlaylist}
-                onFilterByUser={handleFilterByUser}
-                liveStrip={
-                  <LiveNowSection
-                    live={live}
-                    mode="compact"
-                    selectedUsers={selectedUsers}
-                    avatarMap={avatarMap}
-                    onOpenFull={() => setActiveTab('live')}
-                    onSelectPlaylist={handleSelectPlaylist}
-                    onFilterByUser={handleFilterByUser}
-                  />
-                }
-              />
-            </TabsContent>
-
-            <TabsContent value="history">
-              <HistoryTab
-                selectedUsers={selectedUsers}
-                days={days}
-                refreshTick={refreshTick}
-                avatarMap={avatarMap}
-                onSelectPlaylist={handleSelectPlaylist}
-                onFilterByUser={handleFilterByUser}
-              />
-            </TabsContent>
-
-            <TabsContent value="playlists">
-              <PlaylistsTab
-                selectedUsers={selectedUsers}
-                days={days}
-                refreshTick={refreshTick}
-                liveSnapshot={live.snapshot}
-                avatarMap={avatarMap}
-                focusedContextUri={focusedContextUri}
-                onClearFocusedContext={() => setFocusedContextUri(null)}
-                onFilterByUser={handleFilterByUser}
-              />
-            </TabsContent>
-
-            <TabsContent value="overlap">
-              <OverlapTab
-                selectedUsers={selectedUsers}
-                days={days}
-                refreshTick={refreshTick}
-                avatarMap={avatarMap}
-                onFilterByUser={handleFilterByUser}
-              />
-            </TabsContent>
-
-            <TabsContent value="profiles">
-              <ProfilesTab
-                selectedUsers={selectedUsers}
-                days={days}
-                refreshTick={refreshTick}
-                avatarMap={avatarMap}
-                onSelectPlaylist={handleSelectPlaylist}
-                onFilterByUser={handleFilterByUser}
-              />
-            </TabsContent>
-          </Tabs>
-        </main>
-
-        {/* Footer */}
-        <footer className="mt-10 border-t border-[var(--border-subtle)] bg-[var(--bg-inset)]">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
-            <div className="flex items-baseline gap-0.5 font-display text-xl font-extrabold tracking-tight text-[var(--ink-primary)]">
-              <span>bside</span>
-              <span
-                className="inline-block h-[5px] w-[5px] rounded-[var(--radius-pill)] bg-[var(--accent-primary)]"
-                aria-hidden="true"
-              />
-            </div>
-            <a
-              href="https://github.com/002love/bside"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 font-mono text-[11px] font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink-primary)]"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                className="h-3.5 w-3.5"
-                aria-hidden="true"
-              >
-                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-              </svg>
-              <span>002love/bside</span>
-            </a>
+        <div className="mt-2 px-2.5 pb-2">
+          <div className="flex items-center gap-2 rounded-[8px] border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-[11px] text-[var(--ink-muted)]">
+            <Headphones className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Listen along & player soon</span>
           </div>
-        </footer>
+        </div>
       </div>
-    </TooltipProvider>
+
+      {/* Account Footer */}
+      <div className="shrink-0 border-t border-white/[0.07] p-2.5">
+        <AccountBadge
+          profile={accountProfile}
+          liveItem={selfLiveItem}
+          isFilteredToSelf={isFilteredToSelf}
+          onFilterSelf={handleFilterSelf}
+          layout="sidebar"
+        />
+      </div>
+    </div>
+  );
+
+  // Playlists uses an internal full-height split scroll; other tabs scroll smoothly as one full-bleed stage
+  const isSplitViewport = activeTab === 'playlists';
+
+  return (
+    <MotionConfig reducedMotion="user">
+      <TooltipProvider delayDuration={180}>
+        <div className="flex h-screen w-full overflow-hidden bg-[var(--bg-canvas)] text-[var(--ink-primary)]">
+          {/* Desktop Pitch-Black Left Rail */}
+          <aside className="hidden w-[236px] shrink-0 border-r border-white/[0.07] lg:block">
+            {sidebarContent}
+          </aside>
+
+          {/* Mobile Drawer */}
+          <AnimatePresence>
+            {mobileNavOpen && (
+              <>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.16 }}
+                  onClick={() => setMobileNavOpen(false)}
+                  className="fixed inset-0 z-40 bg-black/70 backdrop-blur-xs lg:hidden"
+                />
+                <motion.aside
+                  initial={{ x: -252 }}
+                  animate={{ x: 0 }}
+                  exit={{ x: -252 }}
+                  transition={{ duration: 0.22, ease: EASE_OUT_EXPO }}
+                  className="fixed inset-y-0 left-0 z-50 w-[252px] border-r border-white/[0.08] lg:hidden"
+                >
+                  {sidebarContent}
+                </motion.aside>
+              </>
+            )}
+          </AnimatePresence>
+
+          {/* Full-Bleed Right Workspace */}
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[var(--bg-canvas)]">
+            {/* Single Unified Translucent Utility Bar (ZERO duplicate page title) */}
+            <header className="z-30 flex h-[52px] shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] bg-[#09090b]/80 px-4 backdrop-blur-xl sm:px-6 lg:px-8">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMobileNavOpen(true)}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] text-[var(--ink-secondary)] hover:bg-white/[0.06] hover:text-white lg:hidden cursor-pointer"
+                  aria-label="Open navigation"
+                >
+                  <Menu className="h-4 w-4" />
+                </button>
+
+                {/* Active friend filters live inline in the top utility bar — zero extra banner row */}
+                <AnimatePresence initial={false}>
+                  {selectedUsers.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -6 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -6 }}
+                      transition={{ duration: 0.15 }}
+                      className="flex min-w-0 items-center gap-1.5 overflow-x-auto"
+                    >
+                      {selectedFriendObjects.map((friend) => (
+                        <span
+                          key={friend.user_uri}
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-white/[0.09] py-0.5 pr-1.5 pl-1 text-xs font-medium text-white"
+                        >
+                          <UserAvatar
+                            name={friend.user_name}
+                            imageUrl={friend.image_url}
+                            size="xs"
+                            isLive={friend.is_live}
+                            isSelf={friend.is_self}
+                          />
+                          <span className="max-w-[120px] truncate">{friend.user_name}</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedUsers((prev) =>
+                                prev.filter((u) => u !== friend.user_uri),
+                              )
+                            }
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full text-white/60 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
+                            aria-label={`Remove ${friend.user_name} from filter`}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                      {selectedUsers.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedUsers([])}
+                          className="shrink-0 px-1.5 text-[11px] font-medium text-[var(--ink-muted)] hover:text-white cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Global Controls */}
+              <div className="flex shrink-0 items-center gap-2">
+                <FriendMultiSelect
+                  friends={friendOptions}
+                  selectedUsers={selectedUsers}
+                  onChange={setSelectedUsers}
+                />
+
+                <InfoTooltip
+                  content="Scopes analytics, history, playlists, overlap, and profile changes."
+                  side="bottom"
+                >
+                  <div
+                    role="group"
+                    aria-label="Timeframe"
+                    className="inline-flex h-8 items-center rounded-[8px] bg-white/[0.05] p-0.5 ring-1 ring-inset ring-white/[0.07]"
+                  >
+                    {TIMEFRAMES.map((tf) => {
+                      const active = timeframe === tf.key;
+                      return (
+                        <button
+                          key={tf.key}
+                          type="button"
+                          onClick={() => setTimeframe(tf.key)}
+                          className={cn(
+                            'relative h-full rounded-[6px] px-2.5 text-[11.5px] font-medium transition-colors cursor-pointer select-none',
+                            active
+                              ? 'text-white'
+                              : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]',
+                          )}
+                        >
+                          {active && (
+                            <motion.span
+                              layoutId="timeframe-pill"
+                              transition={SPRING_SNAPPY}
+                              className="absolute inset-0 rounded-[6px] bg-white/[0.13]"
+                            />
+                          )}
+                          <span className="relative z-10">{tf.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </InfoTooltip>
+
+                <InfoTooltip
+                  content={
+                    autoRefresh
+                      ? 'Auto-refreshing every 30s (click to pause)'
+                      : 'Enable 30s auto-refresh'
+                  }
+                  side="bottom"
+                >
+                  <Button
+                    variant={autoRefresh ? 'accent' : 'ghost'}
+                    size="icon"
+                    onClick={() => setAutoRefresh((v) => !v)}
+                    aria-label="Toggle 30 second auto-refresh"
+                    aria-pressed={autoRefresh}
+                  >
+                    <Timer className="h-3.5 w-3.5" />
+                  </Button>
+                </InfoTooltip>
+
+                <InfoTooltip content="Sync now and refresh data" side="bottom">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={triggerRefresh}
+                    aria-label="Refresh"
+                  >
+                    <RefreshCw
+                      className={cn(
+                        'h-3.5 w-3.5',
+                        (loadingFriends || live.polling) && 'animate-spin',
+                      )}
+                    />
+                  </Button>
+                </InfoTooltip>
+              </div>
+            </header>
+
+            {/* Full-Bleed View Stage (NO centered max-w webpage container!) */}
+            <main
+              className={cn(
+                'min-h-0 flex-1 w-full',
+                isSplitViewport ? 'overflow-hidden' : 'overflow-y-auto',
+              )}
+            >
+              <AnimatePresence mode="wait">
+                {activeTab === 'live' && (
+                  <PageTransition key="live" className="w-full">
+                    <LiveNowSection
+                      live={live}
+                      mode="full"
+                      selectedUsers={selectedUsers}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+
+                {activeTab === 'overview' && (
+                  <PageTransition key="overview" className="w-full">
+                    <OverviewTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                      liveStrip={
+                        <LiveNowSection
+                          live={live}
+                          mode="compact"
+                          selectedUsers={selectedUsers}
+                          avatarMap={avatarMap}
+                          onOpenFull={() => setActiveTab('live')}
+                          onSelectPlaylist={handleSelectPlaylist}
+                          onFilterByUser={handleFilterByUser}
+                        />
+                      }
+                    />
+                  </PageTransition>
+                )}
+
+                {activeTab === 'history' && (
+                  <PageTransition key="history" className="w-full">
+                    <HistoryTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+
+                {activeTab === 'playlists' && (
+                  <PageTransition key="playlists" className="h-full w-full">
+                    <PlaylistsTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      liveSnapshot={live.snapshot}
+                      avatarMap={avatarMap}
+                      focusedContextUri={focusedContextUri}
+                      onClearFocusedContext={() => setFocusedContextUri(null)}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+
+                {activeTab === 'overlap' && (
+                  <PageTransition key="overlap" className="w-full">
+                    <OverlapTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+
+                {activeTab === 'profiles' && (
+                  <PageTransition key="profiles" className="w-full">
+                    <ProfilesTab
+                      selectedUsers={selectedUsers}
+                      days={days}
+                      refreshTick={refreshTick}
+                      avatarMap={avatarMap}
+                      onSelectPlaylist={handleSelectPlaylist}
+                      onFilterByUser={handleFilterByUser}
+                    />
+                  </PageTransition>
+                )}
+              </AnimatePresence>
+            </main>
+          </div>
+        </div>
+      </TooltipProvider>
+    </MotionConfig>
   );
 }
 

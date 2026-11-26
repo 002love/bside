@@ -78,7 +78,7 @@ fn main() {
                 .title("bside")
                 .inner_size(1280.0, 840.0)
                 .min_inner_size(920.0, 620.0)
-                .background_color(Color(18, 18, 18, 255))
+                .background_color(Color(9, 9, 11, 255))
                 .on_navigation(|nav_url| {
                     if is_external_http_url(nav_url) {
                         let _ = open::that(nav_url.as_str());

@@ -3,6 +3,7 @@ mod feed;
 mod metadata;
 mod models;
 mod own_observer;
+pub mod player;
 mod profile;
 mod realtime;
 
@@ -27,10 +28,16 @@ pub use models::{
     canonical_spotify_dj_uri, classify_context_type, is_spotify_dj_context,
 };
 pub use own_observer::OwnPlaybackObserver;
+#[allow(unused_imports)]
+pub use player::{
+    PlayRequest, PlayerContext, PlayerDevice, PlayerError, PlayerErrorCode, PlayerQueueItem,
+    PlayerRestrictions, PlayerSnapshot, PlayerTrack, RepeatMode,
+};
 pub use profile::fetch_user_profile;
 #[allow(unused_imports)]
 pub use realtime::{
     ActivityEvent, StreamConfig, TransportMode, TransportPreference, spawn_activity_stream,
+    spawn_activity_stream_with_targets,
 };
 
 #[cfg(test)]
