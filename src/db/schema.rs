@@ -152,17 +152,18 @@ const REPAIR_V1_KEY: &str = "repair_v1_skip_dedupe";
 const REPAIR_V2_KEY: &str = "repair_v2_end_of_track_dedupe";
 const REPAIR_V3_KEY: &str = "repair_v3_per_user_liked_songs";
 const REPAIR_V4_KEY: &str = "repair_v4_per_user_dj";
+const REPAIR_V5_KEY: &str = "repair_v5_stuck_and_pause_resume";
 
 fn run_one_time_repairs(conn: &Connection) -> Result<()> {
-    let v2_done: bool = conn
+    let v5_done: bool = conn
         .query_row(
             "SELECT 1 FROM schema_meta WHERE key = ?1 LIMIT 1",
-            [REPAIR_V2_KEY],
+            [REPAIR_V5_KEY],
             |_| Ok(true),
         )
         .unwrap_or(false);
 
-    if !v2_done {
+    if !v5_done {
         super::listens::repair_duplicate_listens_and_skips_conn(conn)?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
@@ -171,6 +172,10 @@ fn run_one_time_repairs(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
             [REPAIR_V2_KEY],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, '1')",
+            [REPAIR_V5_KEY],
         )?;
     }
 
